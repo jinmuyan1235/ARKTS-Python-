@@ -43,6 +43,7 @@ export struct PageHeader {
   @Prop subtitle: string = ''
   @Prop currentUser: UserProfile | undefined = undefined
   onOpenSettings: () => void = () => {}
+  onOpenGuide: () => void = () => {}
 
   build() {
     Row({ space: 11 }) {
@@ -72,11 +73,33 @@ export struct PageHeader {
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
-      ProfileAvatar({ user: this.currentUser, avatarSize: 40 })
+      Row({ space: 7 }) {
+        Column() {
+          Text('?')
+            .fontSize(18)
+            .fontWeight(FontWeight.Bold)
+            .fontColor($r('app.color.primary'))
+        }
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .width(40)
+        .height(40)
+        .backgroundColor($r('app.color.primary_soft'))
+        .borderRadius(20)
+        .onClick(this.onOpenGuide)
+        .accessibilityText('打开化学信息学术语与项目指南')
+
+        Column() {
+          ProfileAvatar({ user: this.currentUser, avatarSize: 40 })
+        }
+        .width(40)
+        .height(40)
+        .onClick(this.onOpenSettings)
+        .accessibilityText('打开账号设置')
+      }
     }
     .alignItems(VerticalAlign.Center)
     .width('100%')
-    .onClick(this.onOpenSettings)
-    .accessibilityText(`${this.title}，打开账号设置`)
+    .accessibilityText(`${this.title}页面标题`)
   }
 }

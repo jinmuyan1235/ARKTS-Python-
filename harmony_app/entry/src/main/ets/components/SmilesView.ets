@@ -18,6 +18,7 @@ export struct SmilesView {
     { name: '乙醇', value: 'CCO' }
   ]
   onOpenSettings: () => void = () => {}
+  onOpenGuide: () => void = () => {}
   onAnalyze: () => void = () => {}
 
   build() {
@@ -29,7 +30,8 @@ export struct SmilesView {
             title: 'SMILES',
             subtitle: '校验分子表达式并生成可追溯的性质报告。',
             currentUser: this.currentUser,
-            onOpenSettings: this.onOpenSettings
+            onOpenSettings: this.onOpenSettings,
+            onOpenGuide: this.onOpenGuide
           })
 
           Column({ space: 14 }) {

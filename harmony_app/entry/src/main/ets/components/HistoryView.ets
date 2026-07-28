@@ -16,6 +16,7 @@ export struct HistoryView {
   @Prop errorMessage: string = ''
   @Prop hasMore: boolean = false
   onOpenSettings: () => void = () => {}
+  onOpenGuide: () => void = () => {}
   onReload: (reset: boolean) => void = (_reset: boolean) => {}
   onFiltersChanged: (scope: string, ownerUserId: string, status: string, favoritesOnly: boolean) => void =
     (_scope: string, _ownerUserId: string, _status: string, _favoritesOnly: boolean) => {}
@@ -68,7 +69,8 @@ export struct HistoryView {
           title: '团队历史',
           subtitle: '共享每一次识别、校验、确认与收藏。',
           currentUser: this.currentUser,
-          onOpenSettings: this.onOpenSettings
+          onOpenSettings: this.onOpenSettings,
+          onOpenGuide: this.onOpenGuide
         })
 
         Row({ space: 8 }) {

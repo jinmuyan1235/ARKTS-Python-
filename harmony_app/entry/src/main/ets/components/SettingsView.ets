@@ -27,6 +27,7 @@ export struct SettingsView {
   onSaveSettings: () => void = () => {}
   onCheckService: () => void = () => {}
   onLogout: () => void = () => {}
+  onOpenGuide: () => void = () => {}
 
   @Builder
   private cardTitle(symbol: string, title: string, caption: string) {
@@ -41,8 +42,38 @@ export struct SettingsView {
           PageHeader({
             title: '实验室设置',
             subtitle: '管理团队身份、安全会话与电脑端识别服务。',
-            currentUser: this.currentUser
+            currentUser: this.currentUser,
+            onOpenGuide: this.onOpenGuide
           })
+
+          Row({ space: 12 }) {
+            Text('?')
+              .fontSize(21)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.primary'))
+              .textAlign(TextAlign.Center)
+              .width(44)
+              .height(44)
+              .backgroundColor($r('app.color.primary_soft'))
+              .borderRadius(14)
+            Column({ space: 3 }) {
+              Text('术语与项目指南')
+                .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+              Text('面向非化学信息学专家，了解结果字段和使用边界。')
+                .fontSize(12).fontColor($r('app.color.text_secondary')).maxLines(2)
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Text('查看 ›').fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.primary'))
+          }
+          .alignItems(VerticalAlign.Center)
+          .width('100%')
+          .padding(16)
+          .backgroundColor($r('app.color.surface'))
+          .border({ width: 1, color: $r('app.color.border') })
+          .borderRadius($r('app.float.card_radius'))
+          .onClick(this.onOpenGuide)
+          .accessibilityText('打开化学信息学术语与项目指南')
 
           if (this.currentUser !== undefined) {
             Column({ space: 14 }) {
