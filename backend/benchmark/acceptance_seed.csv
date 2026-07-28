@@ -1,0 +1,13 @@
+sample_id,smiles,category,source,split,scaffold_key,source_document,complexity,structure_features,notes
+aspirin,CC(=O)Oc1ccccc1C(=O)O,clean_generated,rdkit_seed,test,benzene_carboxylate,generated_seed,medium,ester;acid;aromatic,Common aromatic ester acid
+caffeine,Cn1cnc2c1c(=O)n(C)c(=O)n2C,clean_generated,rdkit_seed,test,xanthine,generated_seed,medium,heteroaromatic;multiple_hetero_atoms,Methylated xanthine
+ethanol,CCO,clean_generated,rdkit_seed,validation,aliphatic_alcohol,generated_seed,low,alcohol,Small molecule baseline
+benzene,c1ccccc1,clean_generated,rdkit_seed,validation,benzene,generated_seed,low,aromatic,Simple aromatic ring
+l_alanine,C[C@H](N)C(=O)O,stereochemistry,rdkit_seed,test,amino_acid,generated_seed,medium,stereocenter;amine;acid,Chiral center
+trans_difluoroethene,F/C=C/F,stereochemistry,rdkit_seed,test,alkene,generated_seed,low,e_z_double_bond;halogen,E/Z bond notation
+ammonium,[NH4+],charged_isotope,rdkit_seed,test,ammonium,generated_seed,low,formal_charge,Positive formal charge
+sodium_acetate,CC(=O)[O-].[Na+],salt_fragment,rdkit_seed,test,acetate_salt,generated_seed,medium,salt;fragment;formal_charge,Disconnected salt
+cyclododecane,C1CCCCCCCCCCC1,macrocycle,rdkit_seed,test,macrocycle,generated_seed,medium,macrocycle;long_chain,Large ring
+naphthalene,c1ccc2ccccc2c1,fused_ring,rdkit_seed,test,fused_aromatic,generated_seed,medium,fused_ring;aromatic,Fused aromatic rings
+tributylamine,CCCCN(CCCC)CCCC,long_chain,rdkit_seed,test,tertiary_amine,generated_seed,medium,long_chain;amine,Flexible aliphatic amine
+nitrobenzene,O=[N+]([O-])c1ccccc1,charged_isotope,rdkit_seed,test,nitro_aromatic,generated_seed,medium,formal_charge;aromatic,Nitro charge-separated form

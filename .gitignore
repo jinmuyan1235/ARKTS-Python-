@@ -1,0 +1,18 @@
+# Workspace and IDE state
+**/.idea/
+**/.hvigor/
+**/oh_modules/
+**/build/
+**/local.properties
+
+# Python runtime state
+backend/data/api_jobs/
+backend/data/runs/
+backend/data/avatars/
+backend/data/app.db*
+backend/data/*.db*
+backend/models/*
+!backend/models/.gitkeep
+
+# Mobile artifacts
+*.hap

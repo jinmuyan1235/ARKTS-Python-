@@ -1,0 +1,18 @@
+# Optional DECIMER production backend dependencies.
+# Verified on Windows / Python 3.10 with decimer 2.8.0 and TensorFlow 2.20.0.
+# Install only when you want to run the real DECIMER OCSR backend.
+
+decimer==2.8.0
+tensorflow==2.20.0
+
+# Explicit dependencies observed in DECIMER/TensorFlow import diagnostics.
+wrapt==2.2.2
+tqdm==4.68.4
+flatbuffers==25.12.19
+libclang==18.1.1
+termcolor==3.3.0
+selfies==2.2.0
+namex==0.1.0
+tifffile==2025.5.10
+tensorboard-data-server==0.7.2
+sympy==1.14.0

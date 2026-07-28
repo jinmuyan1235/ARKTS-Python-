@@ -1,0 +1,180 @@
+name: manual-gpu-ocsr
+
+on:
+  workflow_dispatch:
+    inputs:
+      gpu_runner_label:
+        description: "Self-hosted GPU runner label."
+        required: true
+        default: "gpu"
+      python_version:
+        description: "Python version available on the GPU runner."
+        required: true
+        default: "3.10"
+      install_decimer_requirements:
+        description: "Install requirements-decimer.txt in this manual workflow."
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      extra_pip_packages:
+        description: "Optional extra pip packages, e.g. torch or MolScribe wheels. Leave empty to use runner environment."
+        required: false
+        default: ""
+      warmup_input:
+        description: "Warm-up image path."
+        required: true
+        default: "data/samples/aspirin.png"
+      fail_on_health_failure:
+        description: "Fail the workflow if any real backend health check fails."
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  gpu-health:
+    runs-on:
+      - self-hosted
+      - ${{ inputs.gpu_runner_label }}
+    timeout-minutes: 120
+    env:
+      MPLBACKEND: Agg
+      APP_MODE: production
+      OCSR_GPU_REQUIRED: "true"
+      OCSR_DEVICE: cuda
+      DECIMER_DEVICE: gpu
+      MOLSCRIBE_ISOLATED_SUBPROCESS: "true"
+      DECIMER_ISOLATED_SUBPROCESS: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+          cache: pip
+
+      - name: Install base dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Optionally install DECIMER dependencies
+        if: ${{ inputs.install_decimer_requirements == 'true' }}
+        run: python -m pip install -r requirements-decimer.txt
+
+      - name: Optionally install extra GPU/backend packages
+        if: ${{ inputs.extra_pip_packages != '' }}
+        run: python -m pip install ${{ inputs.extra_pip_packages }}
+
+      - name: Compile Python sources
+        run: python -m compileall src scripts tests
+
+      - name: Capture GPU environment and model metadata
+        shell: bash
+        run: |
+          mkdir -p gpu-ci-artifacts
+          python scripts/verify_gpu_environment.py --load-models --no-strict \
+            > gpu-ci-artifacts/gpu_environment.json \
+            2> gpu-ci-artifacts/gpu_environment.stderr || true
+
+      - name: MolScribe health check and warm-up
+        shell: bash
+        run: |
+          set +e
+          python scripts/check_ocsr_backend.py \
+            --backend molscribe \
+            --production \
+            --warmup \
+            --warmup-input "${{ inputs.warmup_input }}" \
+            --molscribe-device cuda \
+            --force \
+            --no-cache \
+            > gpu-ci-artifacts/molscribe_health.json \
+            2> gpu-ci-artifacts/molscribe_health.stderr
+          echo $? > gpu-ci-artifacts/molscribe_health.exitcode
+
+      - name: DECIMER health check and warm-up
+        shell: bash
+        run: |
+          set +e
+          python scripts/check_ocsr_backend.py \
+            --backend decimer \
+            --production \
+            --warmup \
+            --warmup-input "${{ inputs.warmup_input }}" \
+            --decimer-device gpu \
+            --force \
+            --no-cache \
+            > gpu-ci-artifacts/decimer_health.json \
+            2> gpu-ci-artifacts/decimer_health.stderr
+          echo $? > gpu-ci-artifacts/decimer_health.exitcode
+
+      - name: Ensemble smoke benchmark
+        shell: bash
+        run: |
+          set +e
+          python scripts/benchmark_gpu_inference.py --backend ensemble --limit 1 \
+            > gpu-ci-artifacts/ensemble_smoke.json \
+            2> gpu-ci-artifacts/ensemble_smoke.stderr
+          echo $? > gpu-ci-artifacts/ensemble_smoke.exitcode
+
+      - name: Summarize manual GPU results
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path("gpu-ci-artifacts")
+          summary = {}
+          for name in ("molscribe_health", "decimer_health", "ensemble_smoke"):
+              code_path = root / f"{name}.exitcode"
+              code = int(code_path.read_text().strip()) if code_path.is_file() else 1
+              summary[name] = {"exit_code": code, "passed": code == 0}
+          env_path = root / "gpu_environment.json"
+          if env_path.is_file():
+              try:
+                  env = json.loads(env_path.read_text(encoding="utf-8"))
+              except Exception as exc:
+                  env = {"parse_error": str(exc)}
+              summary["environment"] = {
+                  "torch": (env.get("environment") or {}).get("torch"),
+                  "tensorflow": (env.get("environment") or {}).get("tensorflow"),
+                  "models": env.get("models"),
+                  "packages": env.get("packages"),
+              }
+          (root / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+          print(json.dumps(summary, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload GPU diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-gpu-ocsr-${{ github.run_id }}
+          path: gpu-ci-artifacts/
+
+      - name: Enforce manual GPU health result
+        if: ${{ inputs.fail_on_health_failure == 'true' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path("gpu-ci-artifacts")
+          failures = []
+          for name in ("molscribe_health", "decimer_health", "ensemble_smoke"):
+              code_path = root / f"{name}.exitcode"
+              code = int(code_path.read_text().strip()) if code_path.is_file() else 1
+              if code != 0:
+                  failures.append(f"{name} exited with {code}")
+          if failures:
+              print("\n".join(failures), file=sys.stderr)
+              raise SystemExit(1)
+          PY

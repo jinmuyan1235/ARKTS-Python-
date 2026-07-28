@@ -1,0 +1,4 @@
+# Optional PDF rendering dependency for document upload.
+# PyMuPDF/MuPDF is distributed upstream under AGPL/commercial licensing.
+# Install only when that licensing fits your deployment.
+pymupdf==1.28.0
