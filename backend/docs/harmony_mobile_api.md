@@ -56,6 +56,11 @@ Authorization: Bearer <登录返回的 token>
 | POST | `/api/v1/jobs/images` | 上传图片并创建后台任务 |
 | POST | `/api/v1/jobs/samples/{id}` | 创建内置示例任务 |
 | GET | `/api/v1/jobs/{jobId}` | 查询任务状态和完成结果 |
+| POST | `/api/v1/documents` | 上传 PDF、页面图片或 ZIP 文档 |
+| POST | `/api/v1/documents/{id}/detect` | 创建区域检测后台任务 |
+| GET | `/api/v1/documents/{id}` | 读取安全的页面预览与区域列表 |
+| PATCH/PUT | `/api/v1/documents/{id}/regions/{regionId}` | 编辑 bbox、区域类型和确认状态 |
+| POST | `/api/v1/documents/{id}/regions/{regionId}/recognize` | 人工确认 molecule 后创建单区域 OCSR 任务 |
 | POST | `/api/v1/analyze-smiles` | 同步校验/分析 SMILES 并写入历史 |
 | GET | `/api/v1/analyses?scope=all|mine&ownerUserId=...` | 共享历史、个人历史和创建者筛选 |
 | GET | `/api/v1/analyses/{id}` | 读取结果详情、化学身份、图像质量、规则检查、模型轨迹与复核审计 |
@@ -87,9 +92,15 @@ Authorization: Bearer <登录返回的 token>
 
 旧的 `/api/v1/analyze-image` 和 `/api/v1/analyze-sample/{id}` 同步接口保留，用于兼容旧前端。
 
+文档检测复用 `src/documents` 的页面装载、候选检测、筛选和区域编辑审计。检测阶段不运行
+OCSR；只有审核接口明确确认且区域类型为 `molecule` 时才创建识别任务。`reaction_like`
+只返回反应流程分流提示，当前不会解析或进入单分子 OCSR。页面预览使用签名的
+`/media/v1/documents/{id}/pages/{pageNumber}`，响应不暴露电脑本地路径。
+
 ## 任务与历史
 
 - 任务 JSON 保存在 `data\api_jobs`，单工作线程串行复用已加载模型。
+- 文档上传清单保存在 `data\mobile_documents`，页面、区域与审核审计继续使用现有文档结果 JSON。
 - 移动端前台每 2 秒查询一次；切出识别 Tab 后停止查询，返回后继续。
 - 活动任务 ID、服务地址和界面状态保存在 HarmonyOS Preferences。
 - API 密钥和登录令牌保存在 HarmonyOS Asset Store；首次升级会迁移并清除 Preferences 中的旧敏感值。密码不保存在移动端。

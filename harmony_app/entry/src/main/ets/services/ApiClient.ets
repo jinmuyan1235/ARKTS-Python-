@@ -5,6 +5,7 @@ import { friendlyHttpError, normalizeBaseUrl } from './AppUtils'
 const CONNECT_TIMEOUT_MS: number = 15000
 const REQUEST_TIMEOUT_MS: number = 30000
 const MAX_IMAGE_BYTES: number = 15 * 1024 * 1024
+const MAX_DOCUMENT_BYTES: number = 100 * 1024 * 1024
 
 interface ErrorPayload {
   detail?: string
@@ -165,6 +166,26 @@ export class ApiClient {
     }
   }
 
+  static createDocumentMultipart(
+    documentUri: string,
+    fieldName: string,
+    fileName: string,
+    fileContentType: string,
+    boundaryPrefix: string
+  ): MultipartImageBody {
+    const documentBytes: Uint8Array = ApiClient.readDocument(documentUri)
+    const boundary: string = `${boundaryPrefix}${new Date().getTime()}`
+    const prefix: string =
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="${fieldName}"; filename="${fileName}"\r\n` +
+      `Content-Type: ${fileContentType}\r\n\r\n`
+    const suffix: string = `\r\n--${boundary}--\r\n`
+    return {
+      contentType: `multipart/form-data; boundary=${boundary}`,
+      body: ApiClient.concatBytes([ApiClient.asciiBytes(prefix), documentBytes, ApiClient.asciiBytes(suffix)])
+    }
+  }
+
   private static headers(apiKey: string, contentType: string): Record<string, string> {
     const headers: Record<string, string> = {
       'Accept': 'application/json',
@@ -193,6 +214,27 @@ export class ApiClient {
       const bytesRead: number = fs.readSync(file.fd, buffer)
       if (bytesRead !== size) {
         throw new Error('图片读取不完整，请重新选择。')
+      }
+      return new Uint8Array(buffer)
+    } finally {
+      fs.closeSync(file)
+    }
+  }
+
+  private static readDocument(uri: string): Uint8Array {
+    const file = fs.openSync(uri, fs.OpenMode.READ_ONLY)
+    try {
+      const size: number = fs.statSync(file.fd).size
+      if (size <= 0) {
+        throw new Error('所选文档为空。')
+      }
+      if (size > MAX_DOCUMENT_BYTES) {
+        throw new Error('文档不能超过 100 MB。')
+      }
+      const buffer = new ArrayBuffer(size)
+      const bytesRead: number = fs.readSync(file.fd, buffer)
+      if (bytesRead !== size) {
+        throw new Error('文档读取不完整，请重新选择。')
       }
       return new Uint8Array(buffer)
     } finally {

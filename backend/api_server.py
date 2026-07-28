@@ -17,8 +17,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 from threading import Lock
-from typing import Any, AsyncIterator, Literal
+from typing import Any, AsyncIterator, Callable, Literal
 from uuid import uuid4
 
 from fastapi import (
@@ -50,6 +51,11 @@ from src.analysis.correction import (
 )
 from src.analysis.molecule_report import MoleculeReportGenerator
 from src.chem.smiles_validator import validate_smiles
+from src.documents.input_loader import DocumentInputError
+from src.documents.mobile_store import MobileDocumentStore
+from src.documents.processor import DocumentOCSRProcessor
+from src.documents.region_editing import apply_region_edits, is_region_confirmed
+from src.documents.region_review import persist_document_result_atomic
 from src.runtime.run_store import (
     ImageRun,
     create_image_run_from_bytes,
@@ -67,6 +73,7 @@ MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/bmp"}
 AVATAR_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 MAX_AVATAR_BYTES = 3 * 1024 * 1024
+MAX_DOCUMENT_BYTES = int(config.DOCUMENT_MAX_FILE_SIZE_MB * 1024 * 1024)
 ANALYSIS_ID_PATTERN = re.compile(r"^[a-fA-F0-9]{32}$")
 JOB_ID_PATTERN = re.compile(r"^[a-fA-F0-9]{32}$")
 INFERENCE_LOCK = Lock()
@@ -120,6 +127,22 @@ class ProfileRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     old_password: str = Field(alias="oldPassword", min_length=1, max_length=128)
     new_password: str = Field(alias="newPassword", min_length=8, max_length=128)
+
+
+class DocumentRegionEditRequest(BaseModel):
+    bbox: list[int]
+    region_type: Literal[
+        "molecule", "reaction_like", "text", "table", "figure", "unknown", "non_molecule"
+    ] = Field(alias="regionType")
+    confirmed: bool = False
+    note: str | None = Field(default=None, max_length=300)
+
+
+class DocumentRegionRecognizeRequest(BaseModel):
+    # This explicit acknowledgement is the human gate before OCSR.  A region
+    # merely classified as molecule by the detector is never sufficient.
+    confirmed: bool
+    note: str | None = Field(default=None, max_length=300)
 
 
 def _configured_api_key() -> str:
@@ -216,6 +239,26 @@ def _validate_image(payload: bytes) -> None:
             image.verify()
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="文件不是可识别的图片。") from exc
+
+
+def _validate_document_upload(payload: bytes) -> tuple[str, str]:
+    if not payload:
+        raise HTTPException(status_code=400, detail="上传文档为空。")
+    if len(payload) > MAX_DOCUMENT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文档不能超过 {config.DOCUMENT_MAX_FILE_SIZE_MB:g} MB。",
+        )
+    signatures: list[tuple[bytes, str, str]] = [
+        (b"%PDF", ".pdf", "application/pdf"),
+        (b"PK\x03\x04", ".zip", "application/zip"),
+        (b"\x89PNG\r\n\x1a\n", ".png", "image/png"),
+        (b"\xff\xd8\xff", ".jpg", "image/jpeg"),
+    ]
+    for signature, suffix, detected_content_type in signatures:
+        if payload.startswith(signature):
+            return suffix, detected_content_type
+    raise HTTPException(status_code=415, detail="仅支持 PDF、ZIP、PNG 和 JPG 文档。")
 
 
 def _number(block: dict[str, Any], key: str) -> float | int | None:
@@ -655,6 +698,50 @@ class JobStore:
     ) -> None:
         self.executor.submit(self._execute, str(job["jobId"]), generator, run)
 
+    def submit_task(
+        self,
+        job: dict[str, Any],
+        task: Callable[[], dict[str, Any]],
+        running_message: str,
+        completed_message: str,
+        failed_message: str = "任务执行失败，请重试。",
+    ) -> None:
+        """Run a non-image task on the same serial worker as model inference."""
+        self.executor.submit(
+            self._execute_task,
+            str(job["jobId"]),
+            task,
+            running_message,
+            completed_message,
+            failed_message,
+        )
+
+    def _execute_task(
+        self,
+        job_id: str,
+        task: Callable[[], dict[str, Any]],
+        running_message: str,
+        completed_message: str,
+        failed_message: str,
+    ) -> None:
+        self.update(job_id, status="running", message=running_message)
+        try:
+            result = task()
+            values: dict[str, Any] = {
+                "status": "completed",
+                "message": completed_message,
+                "result": result,
+            }
+            analysis_id = str(result.get("analysisId") or "")
+            if analysis_id:
+                values["analysisId"] = analysis_id
+            self.update(job_id, **values)
+        except Exception:
+            # Do not send filesystem paths, dependency details or model stack
+            # information to the mobile UI. Server logs remain the diagnostic
+            # source for an operator.
+            self.update(job_id, status="failed", message=failed_message)
+
     def _execute(self, job_id: str, generator: MoleculeReportGenerator, run: ImageRun) -> None:
         self.update(job_id, status="running", message="模型正在分析图片。")
         try:
@@ -719,6 +806,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.generator = MoleculeReportGenerator(config.OCSR_BACKEND, config.RUNS_DIR)
     app.state.executor = executor
     app.state.job_store = JobStore(config.DATA_DIR / "api_jobs", executor)
+    app.state.document_store = MobileDocumentStore(config.DATA_DIR / "mobile_documents")
+    app.state.document_processor = DocumentOCSRProcessor(
+        backend=config.OCSR_BACKEND,
+        output_dir=config.DOCUMENT_OUTPUT_DIR,
+        report_generator=app.state.generator,
+    )
     app.state.job_store.reconcile_after_restart()
     try:
         yield
@@ -726,7 +819,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-app = FastAPI(title="Molecule Vision Local API", version="2.2.0", lifespan=lifespan)
+app = FastAPI(title="Molecule Vision Local API", version="2.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -748,7 +841,7 @@ def health() -> dict[str, Any]:
         "appMode": config.APP_MODE,
         "backend": config.OCSR_BACKEND,
         "maxUploadBytes": MAX_UPLOAD_BYTES,
-        "apiVersion": "2.2",
+        "apiVersion": "2.3",
     }
 
 
@@ -870,6 +963,93 @@ async def upload_avatar(
     return _user_dto(updated, request)
 
 
+def _mobile_document_store(request: Request) -> MobileDocumentStore:
+    return request.app.state.document_store
+
+
+def _load_mobile_document_result(
+    request: Request,
+    document_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        return _mobile_document_store(request).load_result(document_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="文档不存在。") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail="文档尚未完成区域检测。") from exc
+
+
+def _document_page_path(request: Request, document_id: str, page_number: int) -> Path:
+    _manifest, result = _load_mobile_document_result(request, document_id)
+    page = next(
+        (item for item in result.get("pages", []) if int(item.get("page_number") or 0) == page_number),
+        None,
+    )
+    if not isinstance(page, dict):
+        raise HTTPException(status_code=404, detail="文档页面不存在。")
+    try:
+        path = Path(str(page.get("image_path") or "")).expanduser().resolve()
+        path.relative_to(Path(config.DOCUMENT_OUTPUT_DIR).expanduser().resolve())
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="文档页面不存在。") from exc
+    if not path.is_file() or path.suffix.lower() not in config.SUPPORTED_IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=404, detail="文档页面不存在。")
+    return path
+
+
+def _document_dto(request: Request, manifest: dict[str, Any], result: dict[str, Any] | None) -> dict[str, Any]:
+    pages: list[dict[str, Any]] = []
+    regions: list[dict[str, Any]] = []
+    if result is not None:
+        for page in result.get("pages", []):
+            page_number = int(page.get("page_number") or 0)
+            resource_id = f"{manifest['documentId']}:{page_number}"
+            url = request.url_for(
+                "media_document_page",
+                document_id=str(manifest["documentId"]),
+                page_number=str(page_number),
+            )
+            pages.append({
+                "pageNumber": page_number,
+                "width": int(page.get("width") or 0),
+                "height": int(page.get("height") or 0),
+                "previewUrl": str(url.include_query_params(token=_media_token("document-page", resource_id))),
+            })
+        for region in result.get("regions", []):
+            if region.get("status") == "deleted":
+                continue
+            report = region.get("report") if isinstance(region.get("report"), dict) else {}
+            regions.append({
+                "regionId": str(region.get("region_id") or ""),
+                "pageNumber": int(region.get("page_number") or 0),
+                "bbox": [int(value) for value in (region.get("bbox") or [])],
+                "regionType": str(region.get("region_type") or "unknown"),
+                "confidence": region.get("detection_confidence"),
+                "confirmed": bool(region.get("confirmed")),
+                "status": str(region.get("status") or "detected"),
+                "message": str(region.get("message") or ""),
+                "recognitionJobId": str(region.get("recognition_job_id") or ""),
+                "analysisId": str(report.get("analysis_id") or ""),
+            })
+    owner = AuthRepository().get_user(str(manifest.get("ownerUserId") or ""))
+    summary = result.get("summary", {}) if result else {}
+    return {
+        "documentId": str(manifest["documentId"]),
+        "filename": str(manifest.get("filename") or "document"),
+        "contentType": str(manifest.get("contentType") or ""),
+        "status": str(manifest.get("status") or "uploaded"),
+        "message": str(manifest.get("message") or ""),
+        "detectionJobId": str(manifest.get("detectionJobId") or ""),
+        "createdAt": str(manifest.get("createdAt") or ""),
+        "updatedAt": str(manifest.get("updatedAt") or ""),
+        "createdBy": _user_dto(owner, request) if owner else None,
+        "pageCount": int(summary.get("page_count") or len(pages)),
+        "regionCount": int(summary.get("region_count") or len(regions)),
+        "pages": pages,
+        "regions": regions,
+    }
+
+
 @api.get("/samples")
 def samples(request: Request) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
@@ -949,6 +1129,237 @@ async def create_image_job(
     filename = _clean_filename(file.filename, file.content_type)
     run = create_image_run_from_bytes(payload, filename, runs_root=config.RUNS_DIR)
     return _create_image_job(request, run, "image", str(user["user_id"]))
+
+
+@api.post("/documents", status_code=201)
+async def upload_document(
+    request: Request,
+    file: UploadFile = File(...),
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    original_name = Path(file.filename or "document").name
+    payload = await file.read(MAX_DOCUMENT_BYTES + 1)
+    await file.close()
+    suffix, content_type = _validate_document_upload(payload)
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(original_name).stem).strip("._")[:80]
+    filename = f"{safe_stem or 'document'}{suffix}"
+    manifest = _mobile_document_store(request).create(
+        payload,
+        filename,
+        content_type,
+        str(user["user_id"]),
+    )
+    return _document_dto(request, manifest, None)
+
+
+@api.post("/documents/{document_id}/detect", status_code=202)
+def detect_document_regions(
+    document_id: str,
+    request: Request,
+    _user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    document_store = _mobile_document_store(request)
+    manifest = document_store.load(document_id)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="文档不存在。")
+    job_store: JobStore = request.app.state.job_store
+    existing_job_id = str(manifest.get("detectionJobId") or "")
+    existing_job = job_store.load(existing_job_id) if existing_job_id else None
+    if existing_job and existing_job.get("status") in {"queued", "running"}:
+        return existing_job
+
+    job = job_store.create(
+        input_kind="document_detection",
+        analysis_id="",
+        owner_user_id=str(manifest.get("ownerUserId") or "") or None,
+        message="文档已进入区域检测队列。",
+    )
+    job.update({"documentId": document_id})
+    job_store.save(job)
+    document_store.update(
+        document_id,
+        status="detecting",
+        message="正在渲染页面并检测候选区域。",
+        detectionJobId=str(job["jobId"]),
+    )
+
+    def run_detection() -> dict[str, Any]:
+        current = document_store.load(document_id)
+        if current is None:
+            raise RuntimeError("文档已不存在。")
+        processor: DocumentOCSRProcessor = request.app.state.document_processor
+        try:
+            result = processor.process(str(current["inputPath"]), run_ocsr=False)
+            result_path = persist_document_result_atomic(result)
+            document_store.update(
+                document_id,
+                status="review_pending",
+                message="区域检测完成，请人工审核后再识别 molecule 区域。",
+                resultPath=str(result_path),
+            )
+            return {
+                "documentId": document_id,
+                "pageCount": int((result.get("summary") or {}).get("page_count") or 0),
+                "regionCount": int((result.get("summary") or {}).get("region_count") or 0),
+            }
+        except Exception:
+            document_store.update(document_id, status="failed", message="文档区域检测失败，请检查文件后重试。")
+            raise
+
+    job_store.submit_task(
+        job,
+        run_detection,
+        "正在渲染文档并检测候选区域。",
+        "区域检测完成，等待人工审核。",
+        "文档区域检测失败，请检查文件格式或电脑端依赖后重试。",
+    )
+    return job
+
+
+@api.get("/documents/{document_id}")
+def get_document(
+    document_id: str,
+    request: Request,
+    _user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    store = _mobile_document_store(request)
+    manifest = store.load(document_id)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="文档不存在。")
+    result: dict[str, Any] | None = None
+    if manifest.get("resultPath"):
+        try:
+            _manifest, result = store.load_result(document_id)
+        except FileNotFoundError:
+            result = None
+    return _document_dto(request, manifest, result)
+
+
+@api.patch("/documents/{document_id}/regions/{region_id}")
+@api.put("/documents/{document_id}/regions/{region_id}")
+def edit_document_region(
+    document_id: str,
+    region_id: str,
+    payload: DocumentRegionEditRequest,
+    request: Request,
+    _user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    if len(payload.bbox) != 4:
+        raise HTTPException(status_code=422, detail="区域坐标必须包含 x1、y1、x2、y2。")
+    manifest, result = _load_mobile_document_result(request, document_id)
+    try:
+        updated = apply_region_edits(result, [{
+            "action": "update",
+            "region_id": region_id,
+            "bbox": payload.bbox,
+            "region_type": payload.region_type,
+            "confirmed": payload.confirmed,
+            "note": payload.note,
+        }])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    updated.setdefault("summary", {})["page_count"] = len(updated.get("pages", []))
+    updated["summary"]["detection_error_count"] = len(updated.get("detection_errors", []))
+    persist_document_result_atomic(updated)
+    document = _document_dto(request, manifest, updated)
+    return next(region for region in document["regions"] if region["regionId"] == region_id)
+
+
+@api.post("/documents/{document_id}/regions/{region_id}/recognize", status_code=202)
+def recognize_document_region(
+    document_id: str,
+    region_id: str,
+    payload: DocumentRegionRecognizeRequest,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    if not payload.confirmed:
+        raise HTTPException(status_code=422, detail="请先人工确认该区域为单个 molecule。")
+    document_store = _mobile_document_store(request)
+    _manifest, result = _load_mobile_document_result(request, document_id)
+    region = next((item for item in result.get("regions", []) if str(item.get("region_id")) == region_id), None)
+    if not isinstance(region, dict):
+        raise HTTPException(status_code=404, detail="区域不存在。")
+    region_type = str(region.get("region_type") or "unknown")
+    if region_type == "reaction_like" or region_type.startswith("reaction"):
+        raise HTTPException(status_code=409, detail="reaction_like 区域只做反应流程分流，本阶段不解析。")
+    if region_type != "molecule":
+        raise HTTPException(status_code=422, detail="只有人工确认的 molecule 区域才能进入 OCSR。")
+
+    job_store: JobStore = request.app.state.job_store
+    existing_job_id = str(region.get("recognition_job_id") or "")
+    existing_job = job_store.load(existing_job_id) if existing_job_id else None
+    if existing_job and existing_job.get("status") in {"queued", "running"}:
+        return existing_job
+
+    try:
+        updated = apply_region_edits(result, [{
+            "action": "confirm",
+            "region_id": region_id,
+            "region_type": "molecule",
+            "note": payload.note or "Confirmed from HarmonyOS region review.",
+        }])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    job = job_store.create(
+        input_kind="document_region",
+        analysis_id="",
+        owner_user_id=str(user["user_id"]),
+        message="已确认分子区域，等待 OCSR。",
+    )
+    job.update({"documentId": document_id, "regionId": region_id})
+    job_store.save(job)
+    queued_region = next(item for item in updated["regions"] if str(item.get("region_id")) == region_id)
+    queued_region["status"] = "queued"
+    queued_region["recognition_job_id"] = str(job["jobId"])
+    persist_document_result_atomic(updated)
+
+    def run_region_ocsr() -> dict[str, Any]:
+        _current_manifest, current = document_store.load_result(document_id)
+        current_region = next(
+            (item for item in current.get("regions", []) if str(item.get("region_id")) == region_id),
+            None,
+        )
+        if not isinstance(current_region, dict):
+            raise RuntimeError("待识别区域不存在。")
+        if current_region.get("region_type") != "molecule" or not is_region_confirmed(current_region):
+            raise RuntimeError("区域尚未被人工确认为 molecule。")
+        processor: DocumentOCSRProcessor = request.app.state.document_processor
+        analysis_id = uuid4().hex
+        run_dir = image_run_dir(analysis_id, config.RUNS_DIR)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        processor.report_generator.output_dir = run_dir
+        try:
+            with INFERENCE_LOCK:
+                processor.recognize_region(
+                    current_region,
+                    current.get("pages", []),
+                    str(current.get("output_dir") or config.DOCUMENT_OUTPUT_DIR),
+                    screen=True,
+                    analysis_id=analysis_id,
+                )
+            report = current_region.get("report") if isinstance(current_region.get("report"), dict) else {}
+            crop_path = Path(str(current_region.get("crop_path") or ""))
+            if crop_path.is_file():
+                copied_input = run_dir / f"input{crop_path.suffix.lower() or '.png'}"
+                shutil.copy2(crop_path, copied_input)
+                report.setdefault("input", {})["path"] = str(copied_input)
+            report["analysis_id"] = analysis_id
+            _persist_manual_report(report, run_dir, str(user["user_id"]))
+            if current_region.get("status") != "recognized":
+                raise RuntimeError(str(current_region.get("message") or "区域识别未成功。"))
+            return {"documentId": document_id, "regionId": region_id, "analysisId": analysis_id}
+        finally:
+            persist_document_result_atomic(current)
+
+    job_store.submit_task(
+        job,
+        run_region_ocsr,
+        "已通过人工确认，正在进行区域 OCSR。",
+        "区域识别完成。",
+        "区域识别未完成，请检查区域边界后重试。",
+    )
+    return job
 
 
 @api.get("/jobs/{job_id}")
@@ -1287,6 +1698,27 @@ def media_user_avatar(user_id: str, token: str = Query(default="")) -> FileRespo
     if not path.is_file():
         raise HTTPException(status_code=404, detail="头像不存在。")
     return FileResponse(path, media_type="image/png", filename=f"{user_id}.png")
+
+
+@app.get(
+    "/media/v1/documents/{document_id}/pages/{page_number}",
+    name="media_document_page",
+)
+def media_document_page(
+    document_id: str,
+    page_number: int,
+    request: Request,
+    token: str = Query(default=""),
+) -> FileResponse:
+    resource_id = f"{document_id}:{page_number}"
+    _check_media_token("document-page", resource_id, token)
+    path = _document_page_path(request, document_id, page_number)
+    media_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
+    return FileResponse(
+        path,
+        media_type=media_types.get(path.suffix.lower(), "image/png"),
+        filename=f"{document_id}_p{page_number:03d}{path.suffix.lower()}",
+    )
 
 
 app.include_router(public_api)
