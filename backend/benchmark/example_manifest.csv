@@ -1,0 +1,4 @@
+sample_id,image_path,ground_truth_smiles,expected_action,category,source,split,scaffold_key,source_document,image_quality,complexity,perturbation,structure_features,notes
+aspirin_demo,data/samples/aspirin.png,CC(=O)Oc1ccccc1C(=O)O,recognize,clean_generated,local_demo,smoke,benzene_carboxylate,bundled_demo,clean,medium,none,ester;acid;aromatic,Demo sample for validating benchmark plumbing only
+benzene_demo,data/samples/benzene.png,c1ccccc1,recognize,clean_generated,local_demo,smoke,benzene,bundled_demo,clean,low,none,aromatic,Demo sample for validating benchmark plumbing only
+ethanol_demo,data/samples/ethanol.png,CCO,recognize,clean_generated,local_demo,smoke,aliphatic_alcohol,bundled_demo,clean,low,none,alcohol,Demo sample for validating benchmark plumbing only

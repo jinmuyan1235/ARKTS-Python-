@@ -1,0 +1,13 @@
+{
+  "float": [
+    { "name": "page_horizontal_padding", "value": "16vp" },
+    { "name": "page_top_padding", "value": "18vp" },
+    { "name": "card_radius", "value": "20vp" },
+    { "name": "control_radius", "value": "14vp" },
+    { "name": "touch_min_height", "value": "44vp" },
+    { "name": "title_font_size", "value": "25fp" },
+    { "name": "section_font_size", "value": "18fp" },
+    { "name": "body_font_size", "value": "14fp" },
+    { "name": "caption_font_size", "value": "12fp" }
+  ]
+}

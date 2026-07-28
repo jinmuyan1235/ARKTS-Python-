@@ -1,0 +1,17 @@
+{
+  "release_version": "starter-v0.1",
+  "manifest": "/mnt/c/Users/Administrator/Computer-Vision-Based-Molecular-Structure-Image-Recognition-and-Property-Analysis-System/data/ocsr_real_acceptance/manifest.csv",
+  "dataset_root": "/mnt/c/Users/Administrator/Computer-Vision-Based-Molecular-Structure-Image-Recognition-and-Property-Analysis-System/data/ocsr_real_acceptance",
+  "backends": [
+    "molscribe",
+    "decimer",
+    "ensemble"
+  ],
+  "preprocessing_strategy": "backend-default",
+  "similarity_threshold": 0.95,
+  "identity_comparison": "raw",
+  "standardization_profile": "conservative",
+  "limit": null,
+  "require_real_metadata": true,
+  "gate_thresholds": {}
+}

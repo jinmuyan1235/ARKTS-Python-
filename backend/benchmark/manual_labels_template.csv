@@ -1,0 +1,3 @@
+sample_id,image_path,ground_truth_smiles,expected_action,category,source,split,scaffold_key,source_document,image_quality,complexity,perturbation,structure_features,notes
+paper001_mol01,raw/paper001_mol01.png,CCO,recognize,literature_scan,open_access_paper,test,aliphatic_alcohol,doi_or_url,scanned,low,none,alcohol,Replace this row with a real labeled molecule image
+paper001_region02,raw/paper001_region02.png,,reject,text_distractor,open_access_paper,test,negative_control,doi_or_url,scanned,none,none,non_molecule,Use reject for text/table/reaction regions that should not return a molecule
