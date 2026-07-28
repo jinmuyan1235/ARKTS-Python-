@@ -526,6 +526,12 @@ struct Index {
     })
   }
 
+  private async openKnowledgeGuide(): Promise<void> {
+    await router.pushUrl({
+      url: 'pages/KnowledgeGuide'
+    })
+  }
+
   private async loadHistory(reset: boolean): Promise<void> {
     if (!(await this.requireConfiguration())) {
       return
@@ -684,6 +690,7 @@ struct Index {
       submitting: this.submitting,
       imageUri: this.imageUri,
       onOpenSettings: (): void => { this.currentTab = 3 },
+      onOpenGuide: (): void => { this.openKnowledgeGuide() },
       onLoadSamples: (): void => { this.loadSamples(true) },
       onSubmitSample: (sample: VisionSample): void => { this.submitSample(sample) },
       onChooseImage: (): void => { this.chooseImage() },
@@ -698,6 +705,7 @@ struct Index {
       smilesInput: $smilesInput,
       analyzing: this.smilesAnalyzing,
       onOpenSettings: (): void => { this.currentTab = 3 },
+      onOpenGuide: (): void => { this.openKnowledgeGuide() },
       onAnalyze: (): void => { this.analyzeSmiles() }
     })
   }
@@ -717,6 +725,7 @@ struct Index {
       errorMessage: this.historyError,
       hasMore: this.historyHasMore,
       onOpenSettings: (): void => { this.currentTab = 3 },
+      onOpenGuide: (): void => { this.openKnowledgeGuide() },
       onReload: (reset: boolean): void => { this.loadHistory(reset) },
       onFiltersChanged: (scope: string, ownerUserId: string, status: string, favoritesOnly: boolean): void => {
         this.changeHistoryFilters(scope, ownerUserId, status, favoritesOnly)
@@ -747,6 +756,7 @@ struct Index {
       savingSettings: this.savingSettings,
       checking: this.checking,
       serviceSummary: this.serviceSummary,
+      onOpenGuide: (): void => { this.openKnowledgeGuide() },
       onChooseAvatar: (): void => { this.chooseAvatar() },
       onSaveProfile: (): void => { this.saveProfile() },
       onChangePassword: (): void => { this.changePassword() },

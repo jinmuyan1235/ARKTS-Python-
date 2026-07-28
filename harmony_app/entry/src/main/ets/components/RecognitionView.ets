@@ -19,6 +19,7 @@ export struct RecognitionView {
   @State nowMs: number = Date.now()
   private elapsedTimer: number = -1
   onOpenSettings: () => void = () => {}
+  onOpenGuide: () => void = () => {}
   onLoadSamples: () => void = () => {}
   onSubmitSample: (sample: VisionSample) => void = (_sample: VisionSample) => {}
   onChooseImage: () => void = () => {}
@@ -56,7 +57,8 @@ export struct RecognitionView {
             title: '识别',
             subtitle: '结构图进入电脑端模型，结果回到团队分子工作台。',
             currentUser: this.currentUser,
-            onOpenSettings: this.onOpenSettings
+            onOpenSettings: this.onOpenSettings,
+            onOpenGuide: this.onOpenGuide
           })
 
           Row({ space: 8 }) {

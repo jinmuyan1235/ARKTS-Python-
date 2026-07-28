@@ -1,6 +1,7 @@
 {
   "src": [
     "pages/Index",
-    "pages/ResultDetail"
+    "pages/ResultDetail",
+    "pages/KnowledgeGuide"
   ]
 }
