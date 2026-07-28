@@ -14,6 +14,23 @@ export interface ResultConclusion {
   tone: string
 }
 
+export interface ReviewValidation {
+  valid: boolean
+  message: string
+}
+
+/** Keep these values aligned with the existing backend ReviewRequest literal. */
+export const REVIEW_REASON_CODES: string[] = [
+  'image_unclear',
+  'structure_incomplete',
+  'multiple_molecules',
+  'model_result_unreliable',
+  'other'
+]
+
+const MAX_REVIEW_NOTE_LENGTH: number = 300
+const MAX_REVIEW_SMILES_LENGTH: number = 4096
+
 export const THEME_COLOR_ROLES: string[] = [
   'page_background',
   'surface',
@@ -42,6 +59,12 @@ export function resolveLoadPhase(loading: boolean, itemCount: number, error: str
 }
 
 export function taskPresentation(status: string): TaskPresentation {
+  if (status === 'restoring') {
+    return { symbol: '↻', label: '恢复任务', tone: 'primary', terminal: false }
+  }
+  if (status === 'network_wait') {
+    return { symbol: '⌁', label: '等待网络', tone: 'warning', terminal: false }
+  }
   if (status === 'queued') {
     return { symbol: '◷', label: '等待推理', tone: 'warning', terminal: false }
   }
@@ -102,6 +125,63 @@ export function resultConclusion(
     return { symbol: '!', label: '等待人工复核', message: '请对照上传原图与重绘结构，确认或修正模型结果。', tone: 'warning' }
   }
   return { symbol: '✓', label: '分析完成', message: '结构和分子性质已计算完成。', tone: 'success' }
+}
+
+/**
+ * Mirrors the inexpensive parts of the server review validation so users get
+ * immediate feedback. Chemical validity remains authoritative on the backend.
+ */
+export function validateReviewInput(
+  action: string,
+  smiles: string,
+  reason: string,
+  note: string,
+  inputType: string,
+  confirmed: boolean,
+  correctionRequired: boolean = false
+): ReviewValidation {
+  const cleanSmiles: string = smiles.trim()
+  const cleanNote: string = note.trim()
+  if (inputType !== 'image') {
+    return { valid: false, message: '手动 SMILES 结果不需要图片结构复核。' }
+  }
+  if (cleanSmiles.length > MAX_REVIEW_SMILES_LENGTH) {
+    return { valid: false, message: 'SMILES 不能超过 4096 个字符。' }
+  }
+  if (cleanNote.length > MAX_REVIEW_NOTE_LENGTH) {
+    return { valid: false, message: '复核备注不能超过 300 个字符。' }
+  }
+  if (action === 'confirm') {
+    if (reason.length > 0) {
+      return { valid: false, message: '无法确认原因不能用于确认结构。' }
+    }
+    if (correctionRequired && cleanSmiles.length === 0) {
+      return { valid: false, message: '请输入修正后的 SMILES。' }
+    }
+    return { valid: true, message: '' }
+  }
+  if (action === 'unable_to_confirm') {
+    if (confirmed) {
+      return { valid: false, message: '请先撤销已有确认，再标记为无法确认。' }
+    }
+    if (cleanSmiles.length > 0) {
+      return { valid: false, message: '只有确认结构时才能提交修正 SMILES。' }
+    }
+    if (REVIEW_REASON_CODES.indexOf(reason) < 0) {
+      return { valid: false, message: '请选择无法确认的原因。' }
+    }
+    if (reason === 'other' && cleanNote.length === 0) {
+      return { valid: false, message: '选择其他原因时必须填写备注。' }
+    }
+    return { valid: true, message: '' }
+  }
+  if (action === 'revoke') {
+    if (!confirmed) {
+      return { valid: false, message: '当前结构尚未确认，无需撤销。' }
+    }
+    return { valid: true, message: '' }
+  }
+  return { valid: false, message: '不支持的复核操作。' }
 }
 
 export function qualityReasonLabel(code: string): string {

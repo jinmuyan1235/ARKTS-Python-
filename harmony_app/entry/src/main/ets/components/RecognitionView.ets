@@ -1,4 +1,5 @@
 import { UserProfile, VisionSample } from '../model/VisionResult'
+import { LocalTaskState } from '../controllers/JobController'
 import { formatElapsed, taskPresentation } from '../services/UiPresentation'
 import { AppErrorState, LoadingSkeleton, MoleculeBackdrop, SectionHeader, StatusPill } from './CommonStates'
 import { PageHeader } from './PageChrome'
@@ -6,10 +7,7 @@ import { PageHeader } from './PageChrome'
 @Component
 export struct RecognitionView {
   @Prop currentUser: UserProfile | undefined = undefined
-  @Prop activeJobId: string = ''
-  @Prop jobStatus: string = ''
-  @Prop jobMessage: string = ''
-  @Prop jobCreatedAt: string = ''
+  @Prop tasks: LocalTaskState[] = []
   @Prop samples: VisionSample[] = []
   @Prop samplesLoading: boolean = false
   @Prop samplesError: string = ''
@@ -24,6 +22,7 @@ export struct RecognitionView {
   onSubmitSample: (sample: VisionSample) => void = (_sample: VisionSample) => {}
   onChooseImage: () => void = () => {}
   onSubmitImage: () => void = () => {}
+  onOpenResult: (analysisId: string) => void = (_analysisId: string) => {}
 
   aboutToAppear(): void {
     this.elapsedTimer = setInterval(() => this.nowMs = Date.now(), 1000)
@@ -36,16 +35,71 @@ export struct RecognitionView {
     }
   }
 
-  private jobLabel(): string {
-    return taskPresentation(this.jobStatus).label
+  private displayStatus(task: LocalTaskState): string {
+    return task.networkWaiting ? 'network_wait' : task.status
   }
 
-  private jobSymbol(): string {
-    return taskPresentation(this.jobStatus).symbol
+  private jobLabel(task: LocalTaskState): string {
+    return taskPresentation(this.displayStatus(task)).label
   }
 
-  private jobTone(): string {
-    return taskPresentation(this.jobStatus).tone
+  private jobSymbol(task: LocalTaskState): string {
+    return taskPresentation(this.displayStatus(task)).symbol
+  }
+
+  private jobTone(task: LocalTaskState): string {
+    return taskPresentation(this.displayStatus(task)).tone
+  }
+
+  @Builder
+  private taskCard(task: LocalTaskState) {
+    Column({ space: 10 }) {
+      Row({ space: 10 }) {
+        Text(this.jobSymbol(task))
+          .fontSize(19).fontWeight(FontWeight.Bold).fontColor($r('app.color.primary'))
+          .textAlign(TextAlign.Center).width(40).height(40)
+          .backgroundColor($r('app.color.primary_soft')).borderRadius(13)
+        Column({ space: 3 }) {
+          Row({ space: 7 }) {
+            Text(this.jobLabel(task)).fontSize(15).fontWeight(FontWeight.Medium)
+              .fontColor($r('app.color.text_primary'))
+            StatusPill({ symbol: this.jobSymbol(task), label: this.displayStatus(task), tone: this.jobTone(task) })
+          }
+          Text(task.message).fontSize(12).fontColor($r('app.color.text_secondary')).maxLines(3)
+        }
+        .alignItems(HorizontalAlign.Start).layoutWeight(1)
+      }
+      .width('100%')
+      Row({ space: 8 }) {
+        Text(task.inputKind === 'image' ? '图片任务' : (task.inputKind === 'sample' ? '内置样例' : '恢复中的任务'))
+          .fontSize(10).fontColor($r('app.color.text_tertiary'))
+        Text(`#${task.jobId.substring(Math.max(0, task.jobId.length - 8))}`)
+          .fontSize(10).fontColor($r('app.color.text_tertiary'))
+        Blank()
+        if (taskPresentation(task.status).terminal) {
+          Text('任务已结束').fontSize(10).fontColor($r('app.color.text_tertiary'))
+        } else if (task.createdAt.length > 0) {
+          Text(`已等待 ${formatElapsed(task.createdAt, this.nowMs)}`)
+            .fontSize(10).fontColor($r('app.color.primary'))
+        }
+      }
+      .width('100%')
+      if (!taskPresentation(task.status).terminal && !task.networkWaiting) {
+        LoadingProgress().width('100%').height(4).color($r('app.color.primary'))
+      }
+      if (task.status === 'completed' && task.analysisId.length > 0) {
+        Button('查看结果')
+          .width('100%').height(44)
+          .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
+          .onClick(() => this.onOpenResult(task.analysisId))
+          .accessibilityText(`查看任务${task.jobId}的识别结果`)
+      }
+    }
+    .width('100%').padding(14)
+    .backgroundColor($r('app.color.surface_soft'))
+    .border({ width: 1, color: $r('app.color.divider') })
+    .borderRadius(15)
+    .accessibilityText(`识别任务${task.jobId}：${this.jobLabel(task)}，${task.message}`)
   }
 
   build() {
@@ -80,46 +134,18 @@ export struct RecognitionView {
           .borderRadius(15)
           .accessibilityText(`服务状态：${this.serviceSummary}`)
 
-          if (this.activeJobId.length > 0 || this.jobStatus === 'failed') {
+          if (this.tasks.length > 0) {
             Column({ space: 11 }) {
-              Row({ space: 10 }) {
-                Text(this.jobSymbol())
-                  .fontSize(20)
-                  .fontWeight(FontWeight.Bold)
-                  .fontColor($r('app.color.primary'))
-                  .textAlign(TextAlign.Center)
-                  .width(42).height(42)
-                  .backgroundColor($r('app.color.primary_soft'))
-                  .borderRadius(14)
-                Column({ space: 4 }) {
-                  Row({ space: 8 }) {
-                    Text(this.jobLabel()).fontSize(17).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-                    StatusPill({ symbol: this.jobSymbol(), label: this.jobStatus, tone: this.jobTone() })
-                  }
-                  Text(this.jobMessage).fontSize(12).fontColor($r('app.color.text_secondary')).maxLines(3)
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-              }
-              .width('100%')
-              if (this.activeJobId.length > 0) {
-                Row() {
-                  Text('单工作线程安全推理').fontSize(11).fontColor($r('app.color.text_tertiary'))
-                  Blank()
-                  Text(`已等待 ${formatElapsed(this.jobCreatedAt, this.nowMs)}`)
-                    .fontSize(11).fontColor($r('app.color.primary'))
-                }
-                .width('100%')
-                LoadingProgress().width('100%').height(4).color($r('app.color.primary'))
-              }
+              SectionHeader({ symbol: '◷', title: '本地任务', caption: `${this.tasks.length} 条任务，断网后会自动续查` })
+              ForEach(this.tasks, (task: LocalTaskState) => {
+                this.taskCard(task)
+              }, (task: LocalTaskState) => task.jobId)
             }
-            .width('100%')
-            .padding(16)
+            .alignItems(HorizontalAlign.Start).width('100%').padding(16)
             .backgroundColor($r('app.color.surface'))
             .border({ width: 1, color: $r('app.color.border') })
             .borderRadius($r('app.float.card_radius'))
             .shadow({ radius: 10, color: $r('app.color.shadow'), offsetY: 3 })
-            .accessibilityText(`识别任务：${this.jobLabel()}，${this.jobMessage}`)
           }
 
           Column({ space: 12 }) {
@@ -168,7 +194,7 @@ export struct RecognitionView {
                   .layoutWeight(1)
                   Button('识别')
                     .height(44)
-                    .enabled(!this.submitting && this.activeJobId.length === 0)
+                    .enabled(!this.submitting)
                     .fontColor($r('app.color.text_on_primary'))
                     .backgroundColor($r('app.color.primary'))
                     .onClick(() => this.onSubmitSample(sample))
@@ -220,7 +246,7 @@ export struct RecognitionView {
               .onClick(this.onChooseImage)
             Button(this.submitting ? '正在提交…' : '提交后台识别')
               .width('100%').height(50)
-              .enabled(!this.submitting && this.imageUri.length > 0 && this.activeJobId.length === 0)
+              .enabled(!this.submitting && this.imageUri.length > 0)
               .fontColor($r('app.color.text_on_primary'))
               .backgroundColor($r('app.color.primary'))
               .onClick(this.onSubmitImage)

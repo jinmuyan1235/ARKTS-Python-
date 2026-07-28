@@ -8,13 +8,13 @@ export struct SettingsView {
   @Prop members: UserProfile[] = []
   @Prop membersLoading: boolean = false
   @Prop membersError: string = ''
-  @Link displayName: string
-  @Link role: string
-  @Link oldPassword: string
-  @Link newPassword: string
-  @Link newPasswordConfirm: string
-  @Link apiBaseUrl: string
-  @Link apiKey: string
+  @Prop displayName: string = ''
+  @Prop role: string = ''
+  @Prop oldPassword: string = ''
+  @Prop newPassword: string = ''
+  @Prop newPasswordConfirm: string = ''
+  @Prop apiBaseUrl: string = ''
+  @Prop apiKey: string = ''
   @Prop avatarBusy: boolean = false
   @Prop profileSaving: boolean = false
   @Prop passwordBusy: boolean = false
@@ -28,6 +28,13 @@ export struct SettingsView {
   onCheckService: () => void = () => {}
   onLogout: () => void = () => {}
   onOpenGuide: () => void = () => {}
+  onDisplayNameChanged: (value: string) => void = (_value: string) => {}
+  onRoleChanged: (value: string) => void = (_value: string) => {}
+  onOldPasswordChanged: (value: string) => void = (_value: string) => {}
+  onNewPasswordChanged: (value: string) => void = (_value: string) => {}
+  onNewPasswordConfirmChanged: (value: string) => void = (_value: string) => {}
+  onApiBaseUrlChanged: (value: string) => void = (_value: string) => {}
+  onApiKeyChanged: (value: string) => void = (_value: string) => {}
 
   @Builder
   private cardTitle(symbol: string, title: string, caption: string) {
@@ -98,10 +105,10 @@ export struct SettingsView {
               .width('100%')
               TextInput({ text: this.displayName, placeholder: '显示名称' })
                 .width('100%').height(46).backgroundColor($r('app.color.surface_soft'))
-                .onChange((value: string) => this.displayName = value)
+                .onChange((value: string) => this.onDisplayNameChanged(value))
               TextInput({ text: this.role, placeholder: '组内角色（仅展示）' })
                 .width('100%').height(46).backgroundColor($r('app.color.surface_soft'))
-                .onChange((value: string) => this.role = value)
+                .onChange((value: string) => this.onRoleChanged(value))
               Button(this.profileSaving ? '保存中…' : '保存账号资料')
                 .width('100%').height(46).enabled(!this.profileSaving)
                 .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
@@ -159,13 +166,13 @@ export struct SettingsView {
             .width('100%')
             TextInput({ text: this.oldPassword, placeholder: '当前密码' })
               .type(InputType.Password).height(46).backgroundColor($r('app.color.surface_soft'))
-              .onChange((value: string) => this.oldPassword = value)
+              .onChange((value: string) => this.onOldPasswordChanged(value))
             TextInput({ text: this.newPassword, placeholder: '新密码（至少 8 位）' })
               .type(InputType.Password).height(46).backgroundColor($r('app.color.surface_soft'))
-              .onChange((value: string) => this.newPassword = value)
+              .onChange((value: string) => this.onNewPasswordChanged(value))
             TextInput({ text: this.newPasswordConfirm, placeholder: '再次输入新密码' })
               .type(InputType.Password).height(46).backgroundColor($r('app.color.surface_soft'))
-              .onChange((value: string) => this.newPasswordConfirm = value)
+              .onChange((value: string) => this.onNewPasswordConfirmChanged(value))
             Button(this.passwordBusy ? '正在更新…' : '修改密码并撤销旧会话')
               .width('100%').height(46).enabled(!this.passwordBusy)
               .fontColor($r('app.color.text_on_primary')).backgroundColor($r('app.color.primary_strong'))
@@ -182,11 +189,11 @@ export struct SettingsView {
             Text('服务地址').fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_body')).width('100%')
             TextInput({ text: this.apiBaseUrl, placeholder: 'http://192.168.5.13:8000' })
               .width('100%').height(46).type(InputType.Normal).backgroundColor($r('app.color.surface_soft'))
-              .onChange((value: string) => this.apiBaseUrl = value)
+              .onChange((value: string) => this.onApiBaseUrlChanged(value))
             Text('API 密钥').fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_body')).width('100%')
             TextInput({ text: this.apiKey, placeholder: '与电脑启动命令中的 -ApiKey 一致' })
               .width('100%').height(46).type(InputType.Password).backgroundColor($r('app.color.surface_soft'))
-              .onChange((value: string) => this.apiKey = value)
+              .onChange((value: string) => this.onApiKeyChanged(value))
             Row() {
               StatusPill({ symbol: this.serviceSummary.startsWith('已连接') ? '✓' : '!', label: this.serviceSummary,
                 tone: this.serviceSummary.startsWith('已连接') ? 'success' : 'warning' })

@@ -15,15 +15,20 @@ import {
 } from '../model/VisionResult'
 import { SettingsStore, StoredSettings } from '../services/SettingsStore'
 import { SecureStore } from '../services/SecureStore'
-import { ApiError, VisionApi } from '../services/VisionApi'
+import { ApiClient, isUnauthorizedError } from '../services/ApiClient'
+import { userFacingError } from '../services/AppUtils'
+import { AnalysisApi } from '../services/AnalysisApi'
 import {
   formatReportTime,
   qualityReasonLabel,
   responsiveColumns,
   resultConclusion,
   ResultConclusion,
+  REVIEW_REASON_CODES,
   reviewActionLabel,
-  reviewReasonLabel
+  reviewReasonLabel,
+  ReviewValidation,
+  validateReviewInput
 } from '../services/UiPresentation'
 import { AppErrorState, LoadingSkeleton, MoleculeBackdrop, SectionHeader, StatusPill } from '../components/CommonStates'
 
@@ -70,12 +75,12 @@ struct ResultDetail {
       const settings: StoredSettings = await SettingsStore.load(getContext(this))
       this.apiBaseUrl = settings.apiBaseUrl
       this.apiKey = settings.apiKey
-      VisionApi.setSessionToken(settings.authToken)
+      ApiClient.setSessionToken(settings.authToken)
       await this.loadResult()
     } catch (error) {
       this.loading = false
-      this.loadError = `${error}`
-      await promptAction.openToast({ message: `加载结果失败：${error}` })
+      this.loadError = userFacingError(error as Object, '加载结果失败，请返回后重试。')
+      await promptAction.openToast({ message: this.loadError })
     }
   }
 
@@ -84,13 +89,13 @@ struct ResultDetail {
     this.loadError = ''
     try {
       const data: VisionAnalysisResult = this.normalizeResult(
-        await VisionApi.analysis(this.apiBaseUrl, this.apiKey, this.analysisId)
+        await AnalysisApi.analysis(this.apiBaseUrl, this.apiKey, this.analysisId)
       )
       this.result = data
       this.correctionSmiles = data.smiles === null ? '' : data.smiles
       this.previewMode = data.inputType === 'image' && data.sourceImageUrl !== null ? 'source' : 'structure'
     } catch (error) {
-      this.loadError = `${error}`
+      this.loadError = userFacingError(error as Object, '无法加载分析结果，请稍后重试。')
       await this.handleActionError(error as Object)
     } finally {
       this.loading = false
@@ -98,6 +103,8 @@ struct ResultDetail {
   }
 
   private normalizeResult(data: VisionAnalysisResult): VisionAnalysisResult {
+    data.message = userFacingError(data.message, data.status === 'success' ?
+      '分析已完成。' : '分析未完成，请重新提交。')
     if (data.sourceImageUrl === undefined) {
       data.sourceImageUrl = null
     }
@@ -129,6 +136,7 @@ struct ResultDetail {
         reasonCodes: []
       }
     }
+    data.imageQuality.reasonCodes = data.imageQuality.reasonCodes === undefined ? [] : data.imageQuality.reasonCodes
     if (data.lipinskiDetail === undefined) {
       data.lipinskiDetail = {
         passed: data.lipinskiPassed,
@@ -136,6 +144,8 @@ struct ResultDetail {
         checks: []
       }
     }
+    data.lipinskiDetail.checks = data.lipinskiDetail.checks === undefined ? [] : data.lipinskiDetail.checks
+    data.lipinskiDetail.summary = data.lipinskiDetail.summary === undefined ? '' : data.lipinskiDetail.summary
     if (data.recognitionTrace === undefined) {
       data.recognitionTrace = {
         modelName: data.backend,
@@ -149,6 +159,8 @@ struct ResultDetail {
         standardizationWarnings: []
       }
     }
+    data.recognitionTrace.standardizationWarnings = data.recognitionTrace.standardizationWarnings === undefined ? [] :
+      data.recognitionTrace.standardizationWarnings
     if (data.review === undefined) {
       data.review = {
         required: data.inputType === 'image',
@@ -162,6 +174,16 @@ struct ResultDetail {
         events: []
       }
     }
+    // The review object is the authoritative state returned by the review API.
+    // Synchronize legacy top-level aliases so every result card refreshes at once.
+    data.review.events = data.review.events === undefined ? [] : data.review.events
+    data.reviewStatus = data.review.status
+    data.confirmed = data.review.confirmed
+    data.admet = data.admet === undefined ? { status: 'unavailable', message: '', items: [] } : data.admet
+    data.admet.items = data.admet.items === undefined ? [] : data.admet.items
+    data.admet.message = data.admet.message === undefined ? '' : data.admet.message
+    data.reasonCodes = data.reasonCodes === undefined ? [] : data.reasonCodes
+    data.warnings = data.warnings === undefined ? [] : data.warnings
     return data
   }
 
@@ -181,14 +203,14 @@ struct ResultDetail {
   }
 
   private async handleActionError(error: Object): Promise<void> {
-    if (error instanceof ApiError && error.statusCode === 401) {
+    if (isUnauthorizedError(error)) {
       await SecureStore.clearSession()
-      VisionApi.setSessionToken('')
+      ApiClient.setSessionToken('')
       await promptAction.openToast({ message: '登录已过期，请重新登录。' })
       this.leaveResult()
       return
     }
-    this.actionError = `${error}`
+    this.actionError = userFacingError(error, '操作失败，请稍后重试。')
   }
 
   private leaveResult(): void {
@@ -203,7 +225,7 @@ struct ResultDetail {
       await pasteboard.getSystemPasteboard().setData(pasteboard.createPlainTextData(value))
       await promptAction.openToast({ message: `${label}已复制。` })
     } catch (error) {
-      await promptAction.openToast({ message: `复制失败：${error}` })
+      await promptAction.openToast({ message: userFacingError(error as Object, '复制失败，请稍后重试。') })
     }
   }
 
@@ -237,7 +259,7 @@ struct ResultDetail {
       )
       await promptAction.openToast({ message: '分析摘要已复制，可手动粘贴分享。' })
     } catch (error) {
-      await promptAction.openToast({ message: `复制失败：${error}` })
+      await promptAction.openToast({ message: userFacingError(error as Object, '复制失败，请稍后重试。') })
     }
   }
 
@@ -279,7 +301,7 @@ struct ResultDetail {
       })
     } catch (error) {
       await this.copyShareText()
-      await promptAction.openToast({ message: `图片分享未完成，摘要已复制，可重试：${error}` })
+      await promptAction.openToast({ message: '图片分享未完成，分析摘要已复制，可稍后重试。' })
     } finally {
       this.shareBusy = false
     }
@@ -289,15 +311,29 @@ struct ResultDetail {
     action: string,
     smiles: string = '',
     reason: string = '',
-    note: string = ''
+    note: string = '',
+    correctionRequired: boolean = false
   ): Promise<void> {
     if (this.result === undefined || this.saving) {
+      return
+    }
+    const validation: ReviewValidation = validateReviewInput(
+      action,
+      smiles,
+      reason,
+      note,
+      this.result.inputType,
+      this.result.confirmed,
+      correctionRequired
+    )
+    if (!validation.valid) {
+      this.actionError = validation.message
       return
     }
     this.saving = true
     this.actionError = ''
     try {
-      const updated = await VisionApi.review(this.apiBaseUrl, this.apiKey, this.result.analysisId, {
+      const updated = await AnalysisApi.review(this.apiBaseUrl, this.apiKey, this.result.analysisId, {
         action: action,
         smiles: smiles.trim().length > 0 ? smiles.trim() : undefined,
         reason: reason.length > 0 ? reason : undefined,
@@ -326,10 +362,10 @@ struct ResultDetail {
   }
 
   private async saveReview(): Promise<void> {
-    if (this.result === undefined || this.correctionSmiles.trim().length === 0 || this.saving) {
+    if (this.result === undefined || this.saving) {
       return
     }
-    await this.submitReview('confirm', this.correctionSmiles)
+    await this.submitReview('confirm', this.correctionSmiles, '', '', true)
   }
 
   private async confirmCurrent(): Promise<void> {
@@ -337,10 +373,6 @@ struct ResultDetail {
   }
 
   private async markUnable(): Promise<void> {
-    if (this.unableReason.length === 0 || (this.unableReason === 'other' && this.unableNote.trim().length === 0)) {
-      this.actionError = this.unableReason.length === 0 ? '请选择无法确认的原因。' : '选择其他原因时必须填写备注。'
-      return
-    }
     await this.submitReview('unable_to_confirm', '', this.unableReason, this.unableNote)
   }
 
@@ -354,7 +386,7 @@ struct ResultDetail {
     }
     this.favoriteBusy = true
     try {
-      await VisionApi.favorite(
+      await AnalysisApi.favorite(
         this.apiBaseUrl,
         this.apiKey,
         this.result.analysisId,
@@ -362,7 +394,7 @@ struct ResultDetail {
       )
       await this.loadResult()
     } catch (error) {
-      await promptAction.openToast({ message: `${error}` })
+      await promptAction.openToast({ message: userFacingError(error as Object, '更新收藏失败，请稍后重试。') })
     } finally {
       this.favoriteBusy = false
     }
@@ -399,7 +431,7 @@ struct ResultDetail {
   }
 
   private reviewReasons(): string[] {
-    return ['image_unclear', 'structure_incomplete', 'multiple_molecules', 'model_result_unreliable', 'other']
+    return REVIEW_REASON_CODES
   }
 
   @Builder
@@ -615,6 +647,7 @@ struct ResultDetail {
             Text(this.displayText(data.predictedSmiles)).fontSize(13).fontColor($r('app.color.text_body')).width('100%')
             TextArea({ text: this.correctionSmiles, placeholder: '输入核对后的 SMILES' })
               .width('100%').height(94)
+              .maxLength(4096)
               .backgroundColor($r('app.color.surface')).border({ width: 1, color: $r('app.color.border') })
               .borderRadius(11).onChange((value: string) => {
                 this.correctionSmiles = value
@@ -622,6 +655,8 @@ struct ResultDetail {
               })
             Text('合法输入会重绘结构并重新计算性质；非法输入不会覆盖原报告。')
               .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
+            Text(`${this.correctionSmiles.length}/4096`)
+              .fontSize(11).fontColor($r('app.color.text_tertiary')).width('100%').textAlign(TextAlign.End)
             Button(this.saving ? '正在校验…' : '保存修正并确认')
               .width('100%').height(46)
               .enabled(!this.saving && this.correctionSmiles.trim().length > 0)
@@ -642,13 +677,21 @@ struct ResultDetail {
             .width('100%')
             TextArea({ text: this.unableNote, placeholder: this.unableReason === 'other' ? '请填写原因（必填）' : '补充说明（可选）' })
               .width('100%').height(86)
+              .maxLength(300)
               .backgroundColor($r('app.color.surface')).border({ width: 1, color: $r('app.color.border') })
               .borderRadius(11).onChange((value: string) => {
                 this.unableNote = value
                 this.actionError = ''
               })
+            Text(`${this.unableNote.length}/300${this.unableReason === 'other' ? ' · 必填' : ' · 可选'}`)
+              .fontSize(11)
+              .fontColor(this.unableReason === 'other' && this.unableNote.trim().length === 0 ?
+                $r('app.color.warning') : $r('app.color.text_tertiary'))
+              .width('100%').textAlign(TextAlign.End)
             Button(this.saving ? '正在记录…' : '确认标记为无法确认')
-              .width('100%').height(46).enabled(!this.saving && this.unableReason.length > 0)
+              .width('100%').height(46)
+              .enabled(!this.saving && this.unableReason.length > 0 &&
+                (this.unableReason !== 'other' || this.unableNote.trim().length > 0))
               .fontColor($r('app.color.text_on_primary')).backgroundColor($r('app.color.warning'))
               .onClick(() => this.markUnable())
           }
@@ -700,6 +743,8 @@ struct ResultDetail {
       if (this.identityExpanded) {
         this.copyableField('最终 SMILES', data.smiles)
         this.copyableField('模型预测 SMILES', data.predictedSmiles)
+        this.copyableField('原始 SMILES', data.identity.rawSmiles)
+        this.copyableField('标准 SMILES', data.identity.canonicalSmiles)
         this.copyableField('规范化 SMILES', data.identity.standardizedSmiles)
         this.copyableField('异构 SMILES', data.identity.isomericSmiles)
         this.copyableField('InChIKey', data.identity.inchiKey)
@@ -779,18 +824,37 @@ struct ResultDetail {
       this.expandableHeader('识别质量与模型', `质量 ${this.displayNumber(data.imageQuality.score)} · ${data.backend}`,
         this.qualityExpanded, () => this.qualityExpanded = !this.qualityExpanded)
       if (this.qualityExpanded) {
+        Row({ space: 8 }) {
+          StatusPill({
+            symbol: data.imageQuality.passed === null ? '·' : (data.imageQuality.passed ? '✓' : '!'),
+            label: data.imageQuality.passed === null ? '质量结论未提供' :
+              (data.imageQuality.passed ? '图像质量通过' : '图像质量需关注'),
+            tone: data.imageQuality.passed === false ? 'warning' :
+              (data.imageQuality.passed === true ? 'success' : 'neutral')
+          })
+        }
+        .width('100%')
         Text(`置信度：${this.confidenceText(data.confidence)}`).fontSize(14).fontColor($r('app.color.text_body'))
+        Text(`质量分：${this.displayNumber(data.imageQuality.score)}`)
+          .fontSize(14).fontColor($r('app.color.text_body'))
         Text(`图片尺寸：${this.displayNumber(data.imageQuality.width)} × ${this.displayNumber(data.imageQuality.height)} px`)
           .fontSize(14).fontColor($r('app.color.text_body'))
         Text(`对比度 / 清晰度：${this.displayNumber(data.imageQuality.contrast)} / ${this.displayNumber(data.imageQuality.blurVariance)}`)
           .fontSize(14).fontColor($r('app.color.text_body'))
+        Text(`墨迹占比 / 边缘墨迹：${this.displayNumber(data.imageQuality.inkRatio)} / ${this.displayNumber(data.imageQuality.borderInkRatio)}`)
+          .fontSize(14).fontColor($r('app.color.text_body')).width('100%')
         Text(`推理耗时：${this.displayNumber(data.inferenceTimeMs, ' ms')}`)
           .fontSize(14).fontColor($r('app.color.text_body'))
         Text(`模型：${this.displayText(data.recognitionTrace.modelName)} ${this.displayText(data.recognitionTrace.modelVersion)}`)
           .fontSize(14).fontColor($r('app.color.text_body')).width('100%')
+        Text(`结果来源：${this.displayText(data.recognitionTrace.resultOrigin)}；最终结构来源：${this.displayText(data.recognitionTrace.finalSource)}`)
+          .fontSize(14).fontColor($r('app.color.text_body')).width('100%')
         Text(`设备 / 策略：${this.displayText(data.device)} / ${this.displayText(data.recognitionTrace.selectedStrategy)}`)
           .fontSize(14).fontColor($r('app.color.text_body')).width('100%')
         Text(`策略尝试：${this.displayNumber(data.recognitionTrace.attemptCount)}；结果一致：${data.recognitionTrace.strategyAgreement === null ? '未提供' : (data.recognitionTrace.strategyAgreement ? '是' : '否')}`)
+          .fontSize(14).fontColor($r('app.color.text_body')).width('100%')
+        Text(`标准化是否改变结构：${data.recognitionTrace.standardizationChanged === null ? '未提供' :
+          (data.recognitionTrace.standardizationChanged ? '是' : '否')}`)
           .fontSize(14).fontColor($r('app.color.text_body')).width('100%')
         if (data.decisionMessage !== null && data.decisionMessage.length > 0) {
           Text(data.decisionMessage).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
@@ -803,6 +867,9 @@ struct ResultDetail {
         })
         ForEach(data.warnings, (warning: string) => {
           Text(`• ${warning}`).fontSize(13).fontColor($r('app.color.warning')).width('100%')
+        })
+        ForEach(data.recognitionTrace.standardizationWarnings, (warning: string) => {
+          Text(`• 标准化：${warning}`).fontSize(13).fontColor($r('app.color.warning')).width('100%')
         })
       }
     }
@@ -864,6 +931,15 @@ struct ResultDetail {
       }
       if (event.note !== null && event.note.length > 0) {
         Text(event.note).fontSize(12).fontColor($r('app.color.text_body')).width('100%')
+      }
+      if (event.smiles !== null && event.smiles.length > 0) {
+        Row() {
+          Text(`SMILES：${event.smiles}`)
+            .fontSize(12).fontColor($r('app.color.text_secondary')).layoutWeight(1).maxLines(3)
+          Text('复制').fontSize(12).fontColor($r('app.color.primary')).width(44).height(44)
+            .textAlign(TextAlign.Center).onClick(() => this.copyText(event.smiles, '复核 SMILES'))
+        }
+        .width('100%')
       }
     }
     .alignItems(HorizontalAlign.Start).width('100%').padding(11)

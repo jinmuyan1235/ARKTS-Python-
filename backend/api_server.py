@@ -130,7 +130,12 @@ def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Ke
     expected = _configured_api_key()
     if not expected:
         raise HTTPException(status_code=503, detail="服务端尚未配置 HARMONY_API_KEY。")
-    if not x_api_key or not hmac.compare_digest(x_api_key, expected):
+    # compare_digest(str, str) only accepts ASCII. Encoding both values keeps
+    # constant-time comparison semantics and makes an accidental Unicode key
+    # return a normal 401 instead of crashing the request dependency.
+    supplied = (x_api_key or "").encode("utf-8")
+    configured = expected.encode("utf-8")
+    if not supplied or not hmac.compare_digest(supplied, configured):
         raise HTTPException(status_code=401, detail="API 密钥错误或缺失。")
 
 

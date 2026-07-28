@@ -1,13 +1,13 @@
 # Molecule Vision 鸿蒙移动端
 
-该工程通过局域网 HTTP 调用 `..\backend` 中的 Python 视觉服务。鸿蒙端提供“识别、SMILES、历史、设置”四栏界面；DECIMER/MolScribe 推理、SQLite 历史和报告文件都保留在电脑端。
+该工程通过局域网 HTTP 调用 `D:\computer_vision_arkts` 中的 Python 视觉服务。鸿蒙端提供“识别、SMILES、历史、设置”四栏界面；DECIMER/MolScribe 推理、SQLite 历史和报告文件都保留在电脑端。
 
 ## 1. 启动电脑端服务
 
 PowerShell 的执行策略可能阻止 `.ps1`。下面的命令只对这一次启动绕过策略，不修改系统全局设置：
 
 ```powershell
-cd ..\backend
+cd D:\computer_vision_arkts
 powershell -ExecutionPolicy Bypass -File .\start_harmony_api.ps1 `
   -PythonExe E:\Anaconda\envs\molecule-vision\python.exe `
   -ApiKey "请替换为你自己的本地密钥"
@@ -16,7 +16,7 @@ powershell -ExecutionPolicy Bypass -File .\start_harmony_api.ps1 `
 脚本默认使用 `production + decimer`，监听 `0.0.0.0:8000`。第一次加载 DECIMER 可能需要几十秒。只检查界面和接口时可使用快速 demo：
 
 ```powershell
-cd ..\backend
+cd D:\computer_vision_arkts
 powershell -ExecutionPolicy Bypass -File .\start_harmony_api.ps1 `
   -PythonExe E:\Anaconda\envs\molecule-vision\python.exe `
   -ApiKey "请替换为你自己的本地密钥" `
@@ -36,7 +36,7 @@ Invoke-RestMethod `
 
 ## 2. 在 DevEco 模拟器运行
 
-1. 用 DevEco Studio 打开 `harmony_app`。
+1. 用 DevEco Studio 打开 `D:\arkts_project`。
 2. 启动手机模拟器并运行 `entry`。
 3. 首次打开会显示化学主题登录页。在登录卡片下方填写电脑服务地址 `http://192.168.5.13:8000` 和启动命令中的 API 密钥；电脑 IP 变化时用 `ipconfig` 查看并替换。
 4. 点击“注册组员”，填写显示名称、组内角色、用户名和至少 8 位密码。
@@ -69,7 +69,7 @@ Invoke-RestMethod `
 ## 4. 命令行构建
 
 ```powershell
-cd harmony_app
+cd D:\arkts_project
 $env:DEVECO_SDK_HOME='E:\DevEco Studio\sdk'
 $env:JAVA_HOME='E:\DevEco Studio\jbr'
 & 'E:\DevEco Studio\tools\node\node.exe' `
@@ -88,7 +88,7 @@ $env:JAVA_HOME='E:\DevEco Studio\jbr'
 构建产物：
 
 ```text
-harmony_app\entry\build\default\outputs\default\entry-default-unsigned.hap
+D:\arkts_project\entry\build\default\outputs\default\entry-default-unsigned.hap
 ```
 
 未配置签名时可以完成 ArkTS 编译和 HAP 打包，但真机安装前需要在 DevEco Studio 中配置签名；IDE 自带模拟器可直接从 DevEco Studio 运行。
