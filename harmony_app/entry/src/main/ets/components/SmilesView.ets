@@ -10,7 +10,7 @@ interface SmilesExample {
 @Component
 export struct SmilesView {
   @Prop currentUser: UserProfile | undefined = undefined
-  @Link smilesInput: string
+  @Prop smilesInput: string = ''
   @Prop analyzing: boolean = false
   private examples: SmilesExample[] = [
     { name: '阿司匹林', value: 'CC(=O)Oc1ccccc1C(=O)O' },
@@ -20,6 +20,7 @@ export struct SmilesView {
   onOpenSettings: () => void = () => {}
   onOpenGuide: () => void = () => {}
   onAnalyze: () => void = () => {}
+  onSmilesChanged: (value: string) => void = (_value: string) => {}
 
   build() {
     Stack() {
@@ -45,7 +46,7 @@ export struct SmilesView {
               .backgroundColor($r('app.color.surface_soft'))
               .border({ width: 1, color: $r('app.color.border') })
               .borderRadius(14)
-              .onChange((value: string) => this.smilesInput = value)
+              .onChange((value: string) => this.onSmilesChanged(value))
               .accessibilityText('SMILES 输入框')
 
             Row() {
@@ -70,7 +71,7 @@ export struct SmilesView {
                     .backgroundColor($r('app.color.primary_soft'))
                     .border({ width: 1, color: $r('app.color.border') })
                     .borderRadius(16)
-                    .onClick(() => this.smilesInput = example.value)
+                    .onClick(() => this.onSmilesChanged(example.value))
                     .accessibilityText(`填入${example.name}的SMILES`)
                 }, (example: SmilesExample) => example.name)
               }

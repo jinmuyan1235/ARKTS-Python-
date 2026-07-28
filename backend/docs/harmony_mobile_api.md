@@ -2,12 +2,12 @@
 
 ## 启动
 
-项目路径为 `backend`，鸿蒙工程路径为 `harmony_app`。
+项目路径为 `D:\computer_vision_arkts`，鸿蒙工程路径为 `D:\arkts_project`。
 
 PowerShell 执行策略阻止脚本时，可仅为本次命令使用 `-ExecutionPolicy Bypass`：
 
 ```powershell
-cd backend
+cd D:\computer_vision_arkts
 powershell -ExecutionPolicy Bypass -File .\start_harmony_api.ps1 `
   -PythonExe E:\Anaconda\envs\molecule-vision\python.exe `
   -ApiKey "请替换为你自己的本地密钥"
@@ -114,7 +114,7 @@ Authorization: Bearer <登录返回的 token>
 后端 API 测试：
 
 ```powershell
-cd backend
+cd D:\computer_vision_arkts
 E:\Anaconda\envs\molecule-vision\python.exe -m pip install -r requirements-api.txt
 E:\Anaconda\envs\molecule-vision\python.exe -m pytest tests\test_harmony_api.py -q
 ```
@@ -122,7 +122,7 @@ E:\Anaconda\envs\molecule-vision\python.exe -m pytest tests\test_harmony_api.py 
 ArkTS/HAP 构建：
 
 ```powershell
-cd harmony_app
+cd D:\arkts_project
 $env:DEVECO_SDK_HOME='E:\DevEco Studio\sdk'
 $env:JAVA_HOME='E:\DevEco Studio\jbr'
 & 'E:\DevEco Studio\tools\node\node.exe' `

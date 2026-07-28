@@ -90,6 +90,17 @@ def test_api_key_missing_wrong_and_correct(
     assert client.get("/api/v1/samples", headers=auth_headers).status_code == 200
 
 
+def test_unicode_configured_api_key_rejects_without_server_error(
+    harmony_client: tuple[TestClient, Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _runs_dir, _auth_headers = harmony_client
+    monkeypatch.setenv("HARMONY_API_KEY", "本地分子服务-2026")
+    wrong = client.get("/api/v1/health", headers={"X-API-Key": API_KEY})
+    assert wrong.status_code == 401
+    assert wrong.json()["detail"] == "API 密钥错误或缺失。"
+
+
 def test_register_login_logout_members_and_avatar(
     harmony_client: tuple[TestClient, Path, dict[str, str]],
 ) -> None:

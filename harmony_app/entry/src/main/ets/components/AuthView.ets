@@ -1,17 +1,25 @@
 @Component
 export struct AuthView {
-  @Link authMode: string
-  @Link username: string
-  @Link displayName: string
-  @Link role: string
-  @Link password: string
-  @Link passwordConfirm: string
-  @Link apiBaseUrl: string
-  @Link apiKey: string
+  @Prop authMode: string = 'login'
+  @Prop username: string = ''
+  @Prop displayName: string = ''
+  @Prop role: string = ''
+  @Prop password: string = ''
+  @Prop passwordConfirm: string = ''
+  @Prop apiBaseUrl: string = ''
+  @Prop apiKey: string = ''
   @Prop busy: boolean = false
   @Prop errorMessage: string = ''
   @State serviceExpanded: boolean = false
   onSubmit: () => void = () => {}
+  onAuthModeChanged: (value: string) => void = (_value: string) => {}
+  onUsernameChanged: (value: string) => void = (_value: string) => {}
+  onDisplayNameChanged: (value: string) => void = (_value: string) => {}
+  onRoleChanged: (value: string) => void = (_value: string) => {}
+  onPasswordChanged: (value: string) => void = (_value: string) => {}
+  onPasswordConfirmChanged: (value: string) => void = (_value: string) => {}
+  onApiBaseUrlChanged: (value: string) => void = (_value: string) => {}
+  onApiKeyChanged: (value: string) => void = (_value: string) => {}
 
   @Builder
   private fieldLabel(label: string) {
@@ -61,7 +69,7 @@ export struct AuthView {
                 .height(44)
                 .backgroundColor(this.authMode === 'login' ? $r('app.color.primary') : Color.Transparent)
                 .borderRadius(12)
-                .onClick(() => this.authMode = 'login')
+                .onClick(() => this.onAuthModeChanged('login'))
                 .accessibilityText('切换到登录')
               Text('注册组员')
                 .fontSize(15)
@@ -72,7 +80,7 @@ export struct AuthView {
                 .height(44)
                 .backgroundColor(this.authMode === 'register' ? $r('app.color.primary') : Color.Transparent)
                 .borderRadius(12)
-                .onClick(() => this.authMode = 'register')
+                .onClick(() => this.onAuthModeChanged('register'))
                 .accessibilityText('切换到注册组员')
             }
             .width('100%')
@@ -85,29 +93,29 @@ export struct AuthView {
               TextInput({ text: this.displayName, placeholder: '姓名或显示名称' })
                 .width('100%').height(48)
                 .backgroundColor($r('app.color.surface_soft'))
-                .onChange((value: string) => this.displayName = value)
+                .onChange((value: string) => this.onDisplayNameChanged(value))
               TextInput({ text: this.role, placeholder: '组内角色，例如算法、前端、测试' })
                 .width('100%').height(48)
                 .backgroundColor($r('app.color.surface_soft'))
-                .onChange((value: string) => this.role = value)
+                .onChange((value: string) => this.onRoleChanged(value))
             }
 
             this.fieldLabel('账号凭据')
             TextInput({ text: this.username, placeholder: '用户名（字母、数字或下划线）' })
               .width('100%').height(48)
               .backgroundColor($r('app.color.surface_soft'))
-              .onChange((value: string) => this.username = value)
+              .onChange((value: string) => this.onUsernameChanged(value))
             TextInput({ text: this.password, placeholder: '密码（至少 8 位）' })
               .width('100%').height(48)
               .backgroundColor($r('app.color.surface_soft'))
               .type(InputType.Password)
-              .onChange((value: string) => this.password = value)
+              .onChange((value: string) => this.onPasswordChanged(value))
             if (this.authMode === 'register') {
               TextInput({ text: this.passwordConfirm, placeholder: '再次输入密码' })
                 .width('100%').height(48)
                 .backgroundColor($r('app.color.surface_soft'))
                 .type(InputType.Password)
-                .onChange((value: string) => this.passwordConfirm = value)
+                .onChange((value: string) => this.onPasswordConfirmChanged(value))
             }
 
             if (this.errorMessage.length > 0) {
@@ -153,12 +161,12 @@ export struct AuthView {
                 TextInput({ text: this.apiBaseUrl, placeholder: '电脑服务地址' })
                   .width('100%').height(44)
                   .backgroundColor($r('app.color.surface'))
-                  .onChange((value: string) => this.apiBaseUrl = value)
+                  .onChange((value: string) => this.onApiBaseUrlChanged(value))
                 TextInput({ text: this.apiKey, placeholder: '电脑启动命令中的 API 密钥' })
                   .width('100%').height(44)
                   .backgroundColor($r('app.color.surface'))
                   .type(InputType.Password)
-                  .onChange((value: string) => this.apiKey = value)
+                  .onChange((value: string) => this.onApiKeyChanged(value))
               }
               Text('数据、账号与模型都保存在你的电脑，不上传到云端。')
                 .fontSize(11).fontColor($r('app.color.text_secondary')).width('100%')

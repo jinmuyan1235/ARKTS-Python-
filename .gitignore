@@ -1,6 +1,7 @@
 # Workspace and IDE state
 **/.idea/
 **/.hvigor/
+**/.test/
 **/oh_modules/
 **/build/
 **/local.properties
