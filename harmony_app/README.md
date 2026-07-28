@@ -68,6 +68,10 @@ Invoke-RestMethod `
 
 ## 4. 命令行构建
 
+登录后可从“识别”页的“化学文档识别”卡片进入独立工作台。上传 PDF、PNG/JPG 或 ZIP
+后先执行区域检测，再在区域审核页调整 bbox 和类型。只有手动开启确认的 `molecule`
+区域可以提交 OCSR；`reaction_like` 仅分流并显示说明，不会解析。
+
 ```powershell
 cd D:\arkts_project
 $env:DEVECO_SDK_HOME='E:\DevEco Studio\sdk'

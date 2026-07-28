@@ -511,6 +511,12 @@ struct Index {
     })
   }
 
+  private async openDocumentWorkspace(): Promise<void> {
+    await router.pushUrl({
+      url: 'pages/DocumentWorkspace'
+    })
+  }
+
   private async loadHistory(reset: boolean, keepItems: boolean = false): Promise<void> {
     if (!(await this.requireConfiguration())) {
       return
@@ -664,6 +670,7 @@ struct Index {
       imageUri: this.job.imageUri,
       onOpenSettings: (): void => { this.currentTab = 3 },
       onOpenGuide: (): void => { this.openKnowledgeGuide() },
+      onOpenDocuments: (): void => { this.openDocumentWorkspace() },
       onLoadSamples: (): void => { this.loadSamples(true) },
       onSubmitSample: (sample: VisionSample): void => { this.submitSample(sample) },
       onChooseImage: (): void => { this.chooseImage() },

@@ -13,6 +13,7 @@ import {
   taskPresentation,
   THEME_COLOR_ROLES
 } from '../../../main/ets/services/UiPresentation'
+import { documentUploadInfo } from '../../../main/ets/services/DocumentApi'
 
 export default function abilityTest() {
   describe('MoleculeVisionDeviceCore', () => {
@@ -49,6 +50,11 @@ export default function abilityTest() {
       expect(resultConclusion('success', 'image', 'unable_to_confirm', false, true).symbol).assertEqual('?')
       expect(resultConclusion('success', 'image', 'confirmed', true, false).label).assertContain('确认')
       expect(qualityReasonLabel('border_ink')).assertContain('边缘')
+    })
+
+    it('supportsDocumentPickerUploads', 0, () => {
+      expect(documentUploadInfo('file://paper.pdf').contentType).assertEqual('application/pdf')
+      expect(documentUploadInfo('file://scan.jpeg').contentType).assertEqual('image/jpeg')
     })
   })
 }

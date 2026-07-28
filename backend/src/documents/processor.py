@@ -58,6 +58,7 @@ class DocumentOCSRProcessor:
         document_layout_proposal_config: str | CandidateProposalConfig = "baseline",
         crop_screening_config: str | CropScreeningConfig = "candidate",
         screening_config: str | CandidateScreeningConfig | None = None,
+        report_generator: MoleculeReportGenerator | None = None,
     ) -> None:
         self.output_dir = ensure_directory(output_dir)
         self.backend = backend
@@ -88,7 +89,9 @@ class DocumentOCSRProcessor:
             ),
         )
         self.loader = loader or DocumentInputLoader(self.output_dir)
-        self.report_generator = MoleculeReportGenerator(
+        # The HTTP API injects its single warmed generator so image and
+        # document-region jobs share one model instance and one worker.
+        self.report_generator = report_generator or MoleculeReportGenerator(
             backend=backend,
             output_dir=self.output_dir,
             runtime_config=runtime_config,
@@ -327,6 +330,7 @@ class DocumentOCSRProcessor:
         pages: list[DocumentPage] | list[dict[str, Any]],
         document_dir: str | Path,
         screen: bool = True,
+        analysis_id: str | None = None,
     ) -> DocumentRegion | dict[str, Any]:
         """Crop and recognize one molecule region, leaving non-molecule regions untouched."""
         if isinstance(region, dict):
@@ -351,7 +355,7 @@ class DocumentOCSRProcessor:
                 review=region.get("review", {}),
                 processing_time_ms=region.get("processing_time_ms"),
             )
-            self.recognize_region(region_obj, pages, document_dir, screen=screen)
+            self.recognize_region(region_obj, pages, document_dir, screen=screen, analysis_id=analysis_id)
             region.update(region_obj.to_dict())
             return region
 
@@ -365,7 +369,9 @@ class DocumentOCSRProcessor:
         try:
             crop_path = self.crop_region(page, region, document_dir)
             region.crop_path = str(crop_path.resolve())
-            report = self.report_generator.generate(image_path=crop_path)
+            report = self.report_generator.generate(image_path=crop_path, analysis_id=analysis_id) if analysis_id else (
+                self.report_generator.generate(image_path=crop_path)
+            )
             report.setdefault("document_region", {})
             report["document_region"].update({
                 "document_id": region.document_id,

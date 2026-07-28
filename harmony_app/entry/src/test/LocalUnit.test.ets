@@ -29,6 +29,7 @@ import { ConnectionController } from '../main/ets/controllers/ConnectionControll
 import { JobController, pollBackoffMs } from '../main/ets/controllers/JobController'
 import { HistoryController } from '../main/ets/controllers/HistoryController'
 import { normalizeStoredJobIds } from '../main/ets/services/SettingsStore'
+import { documentUploadInfo } from '../main/ets/services/DocumentApi'
 import { AuthResult, HistoryItem, HistoryPage, ReviewRequest, VisionAnalysisResult, VisionJob } from '../main/ets/model/VisionResult'
 import {
   FavoritePayload,
@@ -59,6 +60,11 @@ import {
 
 export default function localUnitTest() {
   describe('MoleculeVisionCore', () => {
+    it('mapsDocumentUploadTypes', 0, () => {
+      expect(documentUploadInfo('file://paper.PDF').contentType).assertEqual('application/pdf')
+      expect(documentUploadInfo('file://page.png?token=1').contentType).assertEqual('image/png')
+      expect(documentUploadInfo('file://pages.zip').fileName).assertEqual('document.zip')
+    })
     it('normalizesServiceUrls', 0, () => {
       expect(normalizeBaseUrl(' http://192.168.5.13:8000/// ')).assertEqual('http://192.168.5.13:8000')
       expect(validateConnectionForm('192.168.5.13:8000', 'secret').valid).assertFalse()

@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from io import BytesIO
 import json
+import shutil
 import time
+from types import SimpleNamespace
 from typing import Iterator
 
 from fastapi.testclient import TestClient
@@ -36,6 +38,7 @@ def harmony_client(
     monkeypatch.setattr(api_server.config, "IS_PRODUCTION_MODE", False)
     monkeypatch.setattr(api_server.config, "RUNS_DIR", runs_dir)
     monkeypatch.setattr(api_server.config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(api_server.config, "DOCUMENT_OUTPUT_DIR", tmp_path / "documents")
     monkeypatch.setattr(api_server, "AnalysisRepository", lambda: repository)
     monkeypatch.setattr(api_server, "AuthRepository", lambda: auth_repository)
     monkeypatch.setattr(
@@ -75,6 +78,98 @@ def _wait_for_job(client: TestClient, job_id: str, auth_headers: dict[str, str])
             return job
         time.sleep(0.05)
     raise AssertionError("background image job did not finish")
+
+
+def test_document_detection_edit_and_human_confirmation_gate(
+    harmony_client: tuple[TestClient, Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    client, _runs_dir, auth_headers = harmony_client
+    document_output = Path(api_server.config.DOCUMENT_OUTPUT_DIR) / "document-api-result"
+    document_output.mkdir(parents=True)
+
+    class FakeDocumentProcessor:
+        def __init__(self) -> None:
+            self.report_generator = SimpleNamespace(output_dir=document_output)
+            self.recognize_calls = 0
+
+        def process(self, input_path: str, run_ocsr: bool = False) -> dict:
+            assert run_ocsr is False
+            page_path = document_output / "page-001.png"
+            shutil.copy2(input_path, page_path)
+            return {
+                "document_id": "fixture-document",
+                "created_at": "2026-07-28T00:00:00+00:00",
+                "input_path": input_path,
+                "output_dir": str(document_output),
+                "backend": "demo",
+                "detector": "fixture",
+                "pages": [{
+                    "document_id": "fixture-document", "page_number": 1,
+                    "image_path": str(page_path), "width": 320, "height": 240,
+                }],
+                "regions": [{
+                    "document_id": "fixture-document", "page_number": 1,
+                    "region_id": "p001_r001", "bbox": [20, 20, 180, 150],
+                    "region_type": "reaction_like", "status": "detected",
+                    "confirmed": False, "audit": [], "screening": {}, "review": {},
+                    "ocsr": {}, "final_result": {}, "report": None,
+                }],
+                "detection_errors": [],
+                "summary": {"page_count": 1, "region_count": 1},
+                "exports": {},
+            }
+
+    fake = FakeDocumentProcessor()
+    api_server.app.state.document_processor = fake
+    image = BytesIO()
+    Image.new("RGB", (320, 240), "white").save(image, format="PNG")
+    uploaded = client.post(
+        "/api/v1/documents",
+        headers=auth_headers,
+        files={"file": ("picker-result", image.getvalue(), "application/octet-stream")},
+    )
+    assert uploaded.status_code == 201
+    assert uploaded.json()["contentType"] == "image/png"
+    assert uploaded.json()["filename"].endswith(".png")
+    document_id = uploaded.json()["documentId"]
+
+    detected = client.post(f"/api/v1/documents/{document_id}/detect", headers=auth_headers)
+    assert detected.status_code == 202
+    assert _wait_for_job(client, detected.json()["jobId"], auth_headers)["status"] == "completed"
+    document = client.get(f"/api/v1/documents/{document_id}", headers=auth_headers)
+    assert document.status_code == 200
+    assert document.json()["pageCount"] == 1
+    assert client.get(document.json()["pages"][0]["previewUrl"]).status_code == 200
+
+    reaction = client.post(
+        f"/api/v1/documents/{document_id}/regions/p001_r001/recognize",
+        headers=auth_headers,
+        json={"confirmed": True},
+    )
+    assert reaction.status_code == 409
+    assert "reaction_like" in reaction.json()["detail"]
+    assert fake.recognize_calls == 0
+
+    edited = client.patch(
+        f"/api/v1/documents/{document_id}/regions/p001_r001",
+        headers=auth_headers,
+        json={
+            "bbox": [25, 25, 170, 145],
+            "regionType": "molecule",
+            "confirmed": False,
+            "note": "人工调整边界",
+        },
+    )
+    assert edited.status_code == 200
+    assert edited.json()["regionType"] == "molecule"
+    assert edited.json()["confirmed"] is False
+    unconfirmed = client.post(
+        f"/api/v1/documents/{document_id}/regions/p001_r001/recognize",
+        headers=auth_headers,
+        json={"confirmed": False},
+    )
+    assert unconfirmed.status_code == 422
 
 
 def test_api_key_missing_wrong_and_correct(

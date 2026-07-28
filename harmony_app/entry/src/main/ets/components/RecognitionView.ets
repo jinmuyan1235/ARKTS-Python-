@@ -18,6 +18,7 @@ export struct RecognitionView {
   private elapsedTimer: number = -1
   onOpenSettings: () => void = () => {}
   onOpenGuide: () => void = () => {}
+  onOpenDocuments: () => void = () => {}
   onLoadSamples: () => void = () => {}
   onSubmitSample: (sample: VisionSample) => void = (_sample: VisionSample) => {}
   onChooseImage: () => void = () => {}
@@ -133,6 +134,23 @@ export struct RecognitionView {
           .border({ width: 1, color: $r('app.color.border') })
           .borderRadius(15)
           .accessibilityText(`服务状态：${this.serviceSummary}`)
+
+          Row({ space: 12 }) {
+            Text('▤').fontSize(22).fontWeight(FontWeight.Bold).fontColor($r('app.color.primary'))
+              .width(44).height(44).textAlign(TextAlign.Center)
+              .backgroundColor($r('app.color.primary_soft')).borderRadius(14)
+            Column({ space: 3 }) {
+              Text('化学文档识别').fontSize(16).fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.text_primary'))
+              Text('上传 PDF，检测并人工审核分子区域').fontSize(11)
+                .fontColor($r('app.color.text_secondary'))
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            Button('进入').height(44).fontColor($r('app.color.text_on_primary'))
+              .backgroundColor($r('app.color.primary')).onClick(this.onOpenDocuments)
+              .accessibilityText('进入化学文档识别工作台')
+          }
+          .width('100%').padding(14).backgroundColor($r('app.color.surface'))
+          .border({ width: 1, color: $r('app.color.border') }).borderRadius(15)
 
           if (this.tasks.length > 0) {
             Column({ space: 11 }) {
