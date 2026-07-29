@@ -10,12 +10,19 @@ export class AuthController {
   authReady: boolean = false
   authenticated: boolean = false
   authMode: string = 'login'
+  authAccountType: string = 'user'
   authUsername: string = ''
   authDisplayName: string = ''
   authRole: string = ''
   authPassword: string = ''
   authPasswordConfirm: string = ''
+  loginUsernameDraft: string = ''
+  loginPasswordDraft: string = ''
   authBusy: boolean = false
+  autoLoginBusy: boolean = false
+  rememberPassword: boolean = false
+  autoLogin: boolean = false
+  rememberedUsernames: string[] = []
   authError: string = ''
   currentUser: UserProfile | undefined = undefined
   members: UserProfile[] = []
@@ -46,7 +53,6 @@ export class AuthController {
   clearSession(): void {
     this.authenticated = false
     this.currentUser = undefined
-    this.members = []
     this.syncProfileFields()
     this.clearSensitiveFormFields()
   }

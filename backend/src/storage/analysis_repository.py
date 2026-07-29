@@ -373,18 +373,26 @@ def record_report(
     return AnalysisRepository().save_analysis(report, report_path=report_path, owner_user_id=owner_user_id)
 
 
-def record_reports(reports: Iterable[Mapping[str, Any]], report_path: str | Path | None = None) -> int:
+def record_reports(
+    reports: Iterable[Mapping[str, Any]],
+    report_path: str | Path | None = None,
+    owner_user_id: str | None = None,
+) -> int:
     """Convenience wrapper for indexing many reports."""
     repository = AnalysisRepository()
     count = 0
     for report in reports:
         if _should_index_report(report):
-            repository.save_analysis(report, report_path=report_path)
+            repository.save_analysis(report, report_path=report_path, owner_user_id=owner_user_id)
             count += 1
     return count
 
 
-def record_result_payload(result: Mapping[str, Any], report_path: str | Path | None = None) -> int:
+def record_result_payload(
+    result: Mapping[str, Any],
+    report_path: str | Path | None = None,
+    owner_user_id: str | None = None,
+) -> int:
     """Index all reports inside a batch or document result payload."""
     reports = list(result.get("reports") or [])
     if not reports and result.get("regions"):
@@ -393,7 +401,33 @@ def record_result_payload(result: Mapping[str, Any], report_path: str | Path | N
             for region in result.get("regions") or []
             if isinstance(region, Mapping) and isinstance(region.get("report"), Mapping)
         ]
-    return record_reports([report for report in reports if isinstance(report, Mapping)], report_path=report_path)
+    valid_reports = [report for report in reports if isinstance(report, Mapping)]
+    if not valid_reports:
+        return 0
+    # A batch result is a container, not an individual report. Pointing every
+    # analysis row at the same container made review persistence overwrite the
+    # whole batch JSON. Store one durable snapshot per analysis instead.
+    if report_path is not None:
+        container_path = Path(report_path).expanduser().resolve()
+        snapshot_dir = container_path.parent / f"{container_path.stem}_reports"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        count = 0
+        repository = AnalysisRepository()
+        for report in valid_reports:
+            if not _should_index_report(report):
+                continue
+            analysis_id = str(report.get("analysis_id") or uuid4().hex)
+            snapshot_path = snapshot_dir / f"{analysis_id}.json"
+            temporary = snapshot_path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(dict(report), ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+            temporary.replace(snapshot_path)
+            repository.save_analysis(report, report_path=snapshot_path, owner_user_id=owner_user_id)
+            count += 1
+        return count
+    return record_reports(valid_reports, owner_user_id=owner_user_id)
 
 
 def analysis_record_from_report(

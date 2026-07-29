@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint", default=None, help="Persistent per-file checkpoint JSON.")
     parser.add_argument("--cache-dir", default=None, help="Content-hash result cache shared by batch jobs.")
     parser.add_argument("--no-cache", action="store_true", help="Force fresh OCSR for explicit retry tasks.")
+    parser.add_argument("--owner-user-id", default=None, help="Owner used when indexing batch reports.")
     return parser
 
 
@@ -66,7 +67,7 @@ def main() -> int:
         }
         result_path = output_dir / "batch_ui_result.json"
         result_path.write_text(to_json_text(ui_result), encoding="utf-8")
-        record_result_payload(ui_result, result_path)
+        record_result_payload(ui_result, result_path, owner_user_id=args.owner_user_id)
         if store and args.job_id:
             if ui_result["summary"].get("cancelled"):
                 store.update_progress(args.job_id, {

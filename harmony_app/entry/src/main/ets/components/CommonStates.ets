@@ -30,10 +30,12 @@ export struct SectionHeader {
           .fontSize($r('app.float.section_font_size'))
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.text_primary'))
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         if (this.caption.length > 0) {
           Text(this.caption)
             .fontSize($r('app.float.caption_font_size'))
             .fontColor($r('app.color.text_secondary'))
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }
       }
       .alignItems(HorizontalAlign.Start)
@@ -67,12 +69,20 @@ export struct StatusPill {
 
   build() {
     Row({ space: 5 }) {
-      Text(this.symbol).fontSize(12).fontWeight(FontWeight.Bold).fontColor(this.pillForeground())
+      Text(this.symbol)
+        .width(14)
+        .fontSize(12)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.pillForeground())
+        .textAlign(TextAlign.Center)
       Text(this.label).fontSize(11).fontWeight(FontWeight.Medium).fontColor(this.pillForeground())
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
     }
-    .padding({ left: 9, right: 9, top: 5, bottom: 5 })
+    .height(28)
+    .padding({ left: 8, right: 8 })
+    .alignItems(VerticalAlign.Center)
     .backgroundColor(this.pillBackground())
-    .borderRadius(12)
+    .borderRadius(14)
     .accessibilityText(this.label)
   }
 }

@@ -28,8 +28,15 @@ import { AuthController } from '../main/ets/controllers/AuthController'
 import { ConnectionController } from '../main/ets/controllers/ConnectionController'
 import { JobController, pollBackoffMs } from '../main/ets/controllers/JobController'
 import { HistoryController } from '../main/ets/controllers/HistoryController'
+import { BatchController, isTerminalBatchStatus, MAX_MOBILE_BATCH_IMAGES } from '../main/ets/controllers/BatchController'
+import { batchCategoryLabel, batchPercent } from '../main/ets/components/BatchView'
+import { BatchJob } from '../main/ets/model/BatchResult'
 import { normalizeStoredJobIds } from '../main/ets/services/SettingsStore'
 import { documentUploadInfo } from '../main/ets/services/DocumentApi'
+import { exportFileName, exportManifestPath, exportSizeLabel } from '../main/ets/services/ExportApi'
+import { ExportItem } from '../main/ets/model/ExportResult'
+import { feedbackQueryPath } from '../main/ets/services/DatasetApi'
+import { feedbackStatusLabel } from '../main/ets/components/DatasetReviewView'
 import { AuthResult, HistoryItem, HistoryPage, ReviewRequest, VisionAnalysisResult, VisionJob } from '../main/ets/model/VisionResult'
 import {
   FavoritePayload,
@@ -60,10 +67,61 @@ import {
 
 export default function localUnitTest() {
   describe('MoleculeVisionCore', () => {
+    it('mapsExportCenterPathsNamesAndSizes', 0, () => {
+      expect(exportManifestPath('analysis', 'analysis 1')).assertEqual('/api/v1/analyses/analysis%201/exports')
+      expect(exportManifestPath('batch', 'batch/1')).assertEqual('/api/v1/batch-jobs/batch%2F1/exports')
+      expect(exportSizeLabel(512)).assertEqual('512 B')
+      expect(exportSizeLabel(2048)).assertEqual('2 KB')
+      const item: ExportItem = {
+        format: 'sdf', label: 'SDF 正式结构', available: false, reason: '仅限人工确认结果', formalOnly: true,
+        fileName: null, contentType: null, sizeBytes: 0, downloadUrl: null, expiresAt: null
+      }
+      expect(exportFileName(item)).assertEqual('molecule-export.sdf')
+    })
+
+    it('mapsFeedbackReviewRoutesAndServerStatuses', 0, () => {
+      expect(feedbackQueryPath('pending', 'CC N')).assertContain('status=pending')
+      expect(feedbackQueryPath('pending', 'CC N')).assertContain('query=CC%20N')
+      expect(feedbackStatusLabel('verified')).assertEqual('已核验')
+      expect(feedbackStatusLabel('license_unclear')).assertEqual('许可不清')
+      expect(feedbackStatusLabel('unknown')).assertEqual('待审核')
+    })
+
     it('mapsDocumentUploadTypes', 0, () => {
       expect(documentUploadInfo('file://paper.PDF').contentType).assertEqual('application/pdf')
       expect(documentUploadInfo('file://page.png?token=1').contentType).assertEqual('image/png')
       expect(documentUploadInfo('file://pages.zip').fileName).assertEqual('document.zip')
+    })
+
+    it('tracksBatchProgressControlsAndPersistence', 0, () => {
+      const controller = new BatchController()
+      controller.restore('batch-restored')
+      expect(controller.pendingJobId()).assertEqual('batch-restored')
+      const imageUris: string[] = []
+      for (let index: number = 0; index < MAX_MOBILE_BATCH_IMAGES + 5; index++) {
+        imageUris.push(`file://image-${index}.png`)
+      }
+      controller.select(imageUris)
+      expect(controller.selectedUris.length).assertEqual(MAX_MOBILE_BATCH_IMAGES)
+      const job: BatchJob = {
+        jobId: 'batch-restored', status: 'running', message: '识别中', backend: 'demo', source: 'upload',
+        parentJobId: null, total: 10, completed: 4, progress: 0.4, currentFile: 'image-5.png', currentIndex: 5,
+        categoryStats: {
+          accepted: 2, acceptedWithWarning: 1, reviewNeeded: 0, rejected: 0, failed: 1, skipped: 0
+        },
+        results: [], createdAt: '2026-07-28T00:00:00Z', startedAt: '2026-07-28T00:00:01Z',
+        finishedAt: null, updatedAt: '2026-07-28T00:00:04Z'
+      }
+      controller.apply(job)
+      expect(controller.canPause()).assertTrue()
+      expect(controller.canCancel()).assertTrue()
+      expect(batchPercent(job.progress)).assertEqual(40)
+      expect(batchCategoryLabel('review_needed')).assertEqual('待复核')
+      job.status = 'completed'
+      controller.apply(job)
+      expect(controller.pendingJobId()).assertEqual('')
+      expect(controller.canRetryFailed()).assertTrue()
+      expect(isTerminalBatchStatus('cancelled')).assertTrue()
     })
     it('normalizesServiceUrls', 0, () => {
       expect(normalizeBaseUrl(' http://192.168.5.13:8000/// ')).assertEqual('http://192.168.5.13:8000')
@@ -217,6 +275,8 @@ export default function localUnitTest() {
 
     it('mapsHttpErrorsWithoutRawJson', 0, () => {
       expect(friendlyHttpError(401, '{"detail":"raw"}', '加载')).assertContain('登录已失效')
+      expect(friendlyHttpError(401, '用户名或密码错误。', '登录')).assertContain('用户名或密码')
+      expect(friendlyHttpError(401, 'API 密钥错误或缺失。', '检测')).assertContain('API 密钥')
       expect(friendlyHttpError(413, '', '上传')).assertContain('15 MB')
       expect(friendlyHttpError(422, 'SMILES 无效', '分析')).assertEqual('SMILES 无效')
       expect(friendlyHttpError(500, 'traceback', '分析')).assertContain('服务暂时不可用')

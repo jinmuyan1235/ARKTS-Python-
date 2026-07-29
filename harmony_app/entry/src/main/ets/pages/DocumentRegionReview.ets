@@ -33,6 +33,9 @@ struct DocumentRegionReview {
   @State recognizing: boolean = false
   @State errorMessage: string = ''
   @State recognitionMessage: string = ''
+  @State recognitionStatus: string = ''
+  @State regionFilter: string = 'molecule'
+  @State coordinatesExpanded: boolean = false
   private recognitionJobId: string = ''
   private pollTimer: number = -1
 
@@ -61,11 +64,63 @@ struct DocumentRegionReview {
   }
 
   private async loadDocument(): Promise<void> {
+    const selectedId: string = this.currentRegion() === undefined ? '' : (this.currentRegion() as DocumentRegionInfo).regionId
     this.document = await DocumentApi.document(this.apiBaseUrl, this.apiKey, this.documentId)
     if (this.document.regions.length > 0) {
-      this.selectedIndex = Math.min(this.selectedIndex, this.document.regions.length - 1)
+      const keptIndex: number = selectedId.length > 0 ?
+        this.document.regions.findIndex(item => item.regionId === selectedId) : -1
+      const moleculeIndex: number = this.document.regions.findIndex(item =>
+        item.regionType === 'molecule' && !item.confirmed)
+      this.selectedIndex = keptIndex >= 0 ? keptIndex : (moleculeIndex >= 0 ? moleculeIndex : 0)
       this.syncForm(this.document.regions[this.selectedIndex])
     }
+  }
+
+  private visibleIndices(): number[] {
+    if (this.document === undefined) return []
+    const indices: number[] = []
+    this.document.regions.forEach((region: DocumentRegionInfo, index: number) => {
+      if (this.regionFilter === 'all' ||
+        (this.regionFilter === 'pending' && !region.confirmed) ||
+        region.regionType === this.regionFilter) indices.push(index)
+    })
+    return indices
+  }
+
+  private filterLabel(filter: string): string {
+    if (filter === 'molecule') return '分子'
+    if (filter === 'pending') return '待审核'
+    if (filter === 'reaction_like') return '反应'
+    return '全部'
+  }
+
+  private typeLabel(type: string): string {
+    if (type === 'molecule') return '分子'
+    if (type === 'reaction_like') return '反应'
+    if (type === 'text') return '文字'
+    if (type === 'table') return '表格'
+    if (type === 'figure') return '插图'
+    return '未知'
+  }
+
+  private changeFilter(filter: string): void {
+    this.regionFilter = filter
+    const indices: number[] = this.visibleIndices()
+    if (indices.length > 0 && indices.indexOf(this.selectedIndex) < 0) this.selectRegion(indices[0])
+  }
+
+  private moveRegion(offset: number): void {
+    const indices: number[] = this.visibleIndices()
+    if (indices.length === 0) return
+    const current: number = indices.indexOf(this.selectedIndex)
+    const next: number = Math.max(0, Math.min(indices.length - 1, (current < 0 ? 0 : current) + offset))
+    this.selectRegion(indices[next])
+  }
+
+  private regionPosition(): string {
+    const indices: number[] = this.visibleIndices()
+    const current: number = indices.indexOf(this.selectedIndex)
+    return indices.length === 0 ? '0 / 0' : `${current + 1} / ${indices.length}`
   }
 
   private syncForm(region: DocumentRegionInfo): void {
@@ -192,6 +247,7 @@ struct DocumentRegionReview {
         this.apiBaseUrl, this.apiKey, this.documentId, current.regionId, this.note
       )
       this.recognitionJobId = job.jobId
+      this.recognitionStatus = job.status
       this.recognitionMessage = job.message
       this.startPolling()
     } catch (error) {
@@ -219,8 +275,9 @@ struct DocumentRegionReview {
     }
     try {
       const job = await DocumentApi.job(this.apiBaseUrl, this.apiKey, this.recognitionJobId)
+      this.recognitionStatus = job.status
       this.recognitionMessage = job.message
-      if (job.status === 'completed' || job.status === 'failed') {
+      if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
         this.stopPolling()
         this.recognizing = false
         await this.loadDocument()
@@ -229,6 +286,37 @@ struct DocumentRegionReview {
       this.stopPolling()
       this.recognizing = false
       this.recognitionMessage = userFacingError(error as Object, '查询区域识别任务失败。')
+    }
+  }
+
+  private async controlRecognition(action: string): Promise<void> {
+    if (this.recognitionJobId.length === 0) return
+    try {
+      let job: DocumentJob
+      if (action === 'pause') {
+        job = await DocumentApi.pauseJob(this.apiBaseUrl, this.apiKey, this.recognitionJobId)
+      } else if (action === 'resume') {
+        job = await DocumentApi.resumeJob(this.apiBaseUrl, this.apiKey, this.recognitionJobId)
+      } else {
+        job = await DocumentApi.cancelJob(this.apiBaseUrl, this.apiKey, this.recognitionJobId)
+      }
+      this.recognitionStatus = job.status
+      this.recognitionMessage = job.message
+      if (job.status === 'cancelled') {
+        this.recognizing = false
+        this.stopPolling()
+      } else {
+        this.startPolling()
+      }
+    } catch (error) {
+      await promptAction.openToast({ message: userFacingError(error as Object, '控制区域识别失败。') })
+    }
+  }
+
+  private async saveAndNext(): Promise<void> {
+    if (await this.saveRegion(false)) {
+      this.moveRegion(1)
+      await promptAction.openToast({ message: '已保存，进入下一项。' })
     }
   }
 
@@ -263,24 +351,37 @@ struct DocumentRegionReview {
               Column({ space: 2 }) {
                 Text('区域审核').fontSize(22).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
                 Text(`${this.document.filename} · ${this.document.regionCount} 个候选区域`)
-                  .fontSize(11).fontColor($r('app.color.text_secondary'))
-              }.alignItems(HorizontalAlign.Start)
+                  .fontSize(11).fontColor($r('app.color.text_secondary')).maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
             }.width('100%')
 
-            Scroll() {
-              Row({ space: 8 }) {
-                ForEach(this.document.regions, (region: DocumentRegionInfo, index: number) => {
-                  Text(`${index + 1} · ${region.regionType}`)
-                    .fontSize(12).fontColor(this.selectedIndex === index ?
+            Column({ space: 11 }) {
+              Text('筛选区域，再逐项确认。只有“分子 + 人工确认”会进入结构识别。')
+                .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
+              Row({ space: 7 }) {
+                ForEach(['molecule', 'pending', 'reaction_like', 'all'], (filter: string) => {
+                  Text(this.filterLabel(filter)).fontSize(11).textAlign(TextAlign.Center).layoutWeight(1)
+                    .fontColor(this.regionFilter === filter ?
                       $r('app.color.text_on_primary') : $r('app.color.text_primary'))
-                    .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-                    .backgroundColor(this.selectedIndex === index ?
+                    .padding({ top: 10, bottom: 10 })
+                    .backgroundColor(this.regionFilter === filter ?
                       $r('app.color.primary') : $r('app.color.surface_soft'))
-                    .borderRadius(18).onClick(() => this.selectRegion(index))
-                }, (region: DocumentRegionInfo) => region.regionId)
-              }
+                    .borderRadius(16).onClick(() => this.changeFilter(filter))
+                })
+              }.width('100%')
+              Row({ space: 10 }) {
+                Button('上一项').layoutWeight(1).height(42).onClick(() => this.moveRegion(-1))
+                  .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
+                Text(this.regionPosition()).fontSize(14).fontWeight(FontWeight.Medium)
+                  .fontColor($r('app.color.text_primary')).textAlign(TextAlign.Center).width(72)
+                Button('下一项').layoutWeight(1).height(42).onClick(() => this.moveRegion(1))
+                  .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
+              }.width('100%')
             }
-            .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+            .alignItems(HorizontalAlign.Start).width('100%').padding(14)
+            .backgroundColor($r('app.color.surface')).borderRadius(16)
+            .border({ width: 1, color: $r('app.color.border') })
 
             if (this.currentRegion() !== undefined) {
               Column({ space: 12 }) {
@@ -304,23 +405,33 @@ struct DocumentRegionReview {
                 }
                 .width('100%').height(280).clip(true)
 
-                Row({ space: 8 }) {
-                  TextInput({ text: this.x1, placeholder: 'x1' }).onChange(value => this.x1 = value)
-                    .type(InputType.Number).layoutWeight(1)
-                  TextInput({ text: this.y1, placeholder: 'y1' }).onChange(value => this.y1 = value)
-                    .type(InputType.Number).layoutWeight(1)
-                  TextInput({ text: this.x2, placeholder: 'x2' }).onChange(value => this.x2 = value)
-                    .type(InputType.Number).layoutWeight(1)
-                  TextInput({ text: this.y2, placeholder: 'y2' }).onChange(value => this.y2 = value)
-                    .type(InputType.Number).layoutWeight(1)
-                }.width('100%')
+                Row() {
+                  Text(`第 ${(this.currentRegion() as DocumentRegionInfo).pageNumber} 页 · ` +
+                    this.typeLabel((this.currentRegion() as DocumentRegionInfo).regionType))
+                    .fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+                  Blank()
+                  Text(this.coordinatesExpanded ? '收起边界' : '调整边界').fontSize(11)
+                    .fontColor($r('app.color.primary'))
+                }.width('100%').onClick(() => this.coordinatesExpanded = !this.coordinatesExpanded)
+                if (this.coordinatesExpanded) {
+                  Row({ space: 8 }) {
+                    TextInput({ text: this.x1, placeholder: 'x1' }).onChange(value => this.x1 = value)
+                      .type(InputType.Number).layoutWeight(1)
+                    TextInput({ text: this.y1, placeholder: 'y1' }).onChange(value => this.y1 = value)
+                      .type(InputType.Number).layoutWeight(1)
+                    TextInput({ text: this.x2, placeholder: 'x2' }).onChange(value => this.x2 = value)
+                      .type(InputType.Number).layoutWeight(1)
+                    TextInput({ text: this.y2, placeholder: 'y2' }).onChange(value => this.y2 = value)
+                      .type(InputType.Number).layoutWeight(1)
+                  }.width('100%')
+                }
 
                 Text('区域类型').fontSize(13).fontWeight(FontWeight.Medium)
                   .fontColor($r('app.color.text_primary')).width('100%')
                 Scroll() {
                   Row({ space: 8 }) {
                     ForEach(REGION_TYPES, (type: string) => {
-                      Text(type).fontSize(11)
+                      Text(this.typeLabel(type)).fontSize(11)
                         .fontColor(this.regionType === type ? $r('app.color.text_on_primary') : $r('app.color.text_primary'))
                         .padding({ left: 12, right: 12, top: 9, bottom: 9 })
                         .backgroundColor(this.regionType === type ? $r('app.color.primary') : $r('app.color.surface_soft'))
@@ -349,16 +460,32 @@ struct DocumentRegionReview {
                   }.width('100%').padding(12).backgroundColor($r('app.color.warning_soft')).borderRadius(12)
                 }
 
-                Button(this.saving ? '正在保存…' : '保存区域').width('100%').height(46)
+                Button(this.saving ? '正在保存…' : '保存并下一项').width('100%').height(46)
                   .enabled(!this.saving && !this.recognizing)
                   .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
-                  .onClick(() => this.saveRegion())
+                  .onClick(() => this.saveAndNext())
                 Button(this.recognizing ? '区域识别中…' : '确认并识别 molecule').width('100%').height(50)
                   .enabled(!this.saving && !this.recognizing && this.confirmed && this.regionType === 'molecule')
                   .fontColor($r('app.color.text_on_primary')).backgroundColor($r('app.color.primary'))
                   .onClick(() => this.recognizeRegion())
                 if (this.recognitionMessage.length > 0) {
                   Text(this.recognitionMessage).fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
+                }
+                if (this.recognizing && (this.recognitionStatus === 'queued' ||
+                  this.recognitionStatus === 'running' || this.recognitionStatus === 'pausing')) {
+                  Row({ space: 8 }) {
+                    Button(this.recognitionStatus === 'pausing' ? '继续' : '暂停').layoutWeight(1).height(42)
+                      .onClick(() => this.controlRecognition(this.recognitionStatus === 'pausing' ? 'resume' : 'pause'))
+                      .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
+                    Button('终止').layoutWeight(1).height(42).onClick(() => this.controlRecognition('cancel'))
+                      .fontColor($r('app.color.danger')).backgroundColor($r('app.color.danger_soft'))
+                  }.width('100%')
+                } else if (this.recognizing && this.recognitionStatus === 'paused') {
+                  Row({ space: 8 }) {
+                    Button('继续').layoutWeight(1).height(42).onClick(() => this.controlRecognition('resume'))
+                    Button('终止').layoutWeight(1).height(42).onClick(() => this.controlRecognition('cancel'))
+                      .fontColor($r('app.color.danger')).backgroundColor($r('app.color.danger_soft'))
+                  }.width('100%')
                 }
                 if ((this.currentRegion() as DocumentRegionInfo).analysisId.length > 0) {
                   Button('查看分子结果').width('100%').height(46)

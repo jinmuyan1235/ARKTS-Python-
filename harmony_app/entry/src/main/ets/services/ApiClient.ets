@@ -6,6 +6,8 @@ const CONNECT_TIMEOUT_MS: number = 15000
 const REQUEST_TIMEOUT_MS: number = 30000
 const MAX_IMAGE_BYTES: number = 15 * 1024 * 1024
 const MAX_DOCUMENT_BYTES: number = 100 * 1024 * 1024
+const MAX_BATCH_IMAGES: number = 30
+const MAX_BATCH_TOTAL_BYTES: number = 120 * 1024 * 1024
 
 interface ErrorPayload {
   detail?: string
@@ -186,6 +188,44 @@ export class ApiClient {
     }
   }
 
+  static createImagesMultipart(
+    imageUris: string[],
+    fieldName: string,
+    boundaryPrefix: string
+  ): MultipartImageBody {
+    if (imageUris.length === 0) {
+      throw new Error('请至少选择一张图片。')
+    }
+    if (imageUris.length > MAX_BATCH_IMAGES) {
+      throw new Error(`单次最多选择 ${MAX_BATCH_IMAGES} 张图片。`)
+    }
+    const boundary: string = `${boundaryPrefix}${new Date().getTime()}`
+    const parts: Uint8Array[] = []
+    let totalBytes: number = 0
+    imageUris.forEach((uri: string, index: number) => {
+      const imageBytes: Uint8Array = ApiClient.readImage(uri)
+      totalBytes += imageBytes.byteLength
+      if (totalBytes > MAX_BATCH_TOTAL_BYTES) {
+        throw new Error('所选图片总大小不能超过 120 MB。')
+      }
+      const suffix: string = ApiClient.imageSuffix(uri)
+      const contentType: string = suffix === '.jpg' || suffix === '.jpeg' ? 'image/jpeg' :
+        (suffix === '.webp' ? 'image/webp' : (suffix === '.bmp' ? 'image/bmp' : 'image/png'))
+      const prefix: string =
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="${fieldName}"; filename="batch_${index + 1}${suffix}"\r\n` +
+        `Content-Type: ${contentType}\r\n\r\n`
+      parts.push(ApiClient.asciiBytes(prefix))
+      parts.push(imageBytes)
+      parts.push(ApiClient.asciiBytes('\r\n'))
+    })
+    parts.push(ApiClient.asciiBytes(`--${boundary}--\r\n`))
+    return {
+      contentType: `multipart/form-data; boundary=${boundary}`,
+      body: ApiClient.concatBytes(parts)
+    }
+  }
+
   private static headers(apiKey: string, contentType: string): Record<string, string> {
     const headers: Record<string, string> = {
       'Accept': 'application/json',
@@ -219,6 +259,17 @@ export class ApiClient {
     } finally {
       fs.closeSync(file)
     }
+  }
+
+  private static imageSuffix(uri: string): string {
+    const clean: string = uri.split('?')[0].toLowerCase()
+    const supported: string[] = ['.png', '.jpg', '.jpeg', '.webp', '.bmp']
+    for (let index: number = 0; index < supported.length; index++) {
+      if (clean.endsWith(supported[index])) {
+        return supported[index]
+      }
+    }
+    return '.png'
   }
 
   private static readDocument(uri: string): Uint8Array {

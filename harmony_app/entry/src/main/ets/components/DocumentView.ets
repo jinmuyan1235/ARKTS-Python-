@@ -1,5 +1,6 @@
 import { DocumentResult } from '../model/DocumentResult'
 import { MoleculeBackdrop, SectionHeader, StatusPill } from './CommonStates'
+import { taskPresentation } from '../services/UiPresentation'
 
 @Component
 export struct DocumentView {
@@ -9,9 +10,13 @@ export struct DocumentView {
   @Prop jobStatus: string = ''
   @Prop jobMessage: string = ''
   onChooseDocument: () => void = () => {}
+  onUseBuiltInDocument: () => void = () => {}
   onUploadAndDetect: () => void = () => {}
   onOpenReview: () => void = () => {}
   onRefresh: () => void = () => {}
+  onPauseJob: () => void = () => {}
+  onResumeJob: () => void = () => {}
+  onCancelJob: () => void = () => {}
 
   private fileLabel(): string {
     if (this.document !== undefined) {
@@ -21,33 +26,28 @@ export struct DocumentView {
   }
 
   build() {
-    Stack() {
+    Stack({ alignContent: Alignment.TopStart }) {
       MoleculeBackdrop()
       Scroll() {
         Column({ space: 16 }) {
-          Column({ space: 5 }) {
-            Text('文档结构识别').fontSize(25).fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.text_primary'))
-            Text('先检测区域，再由组员确认 molecule；反应式区域只分流不解析。')
-              .fontSize(13).fontColor($r('app.color.text_secondary'))
-          }
-          .alignItems(HorizontalAlign.Start).width('100%')
-
           Column({ space: 12 }) {
-            SectionHeader({ symbol: '▤', title: '上传化学文档', caption: '支持 PDF、PNG、JPG 和 ZIP 页面集合' })
+            SectionHeader({ symbol: '▤', title: '文档', caption: 'PDF、图片或 ZIP' })
             Column({ space: 6 }) {
               Text(this.fileLabel()).fontSize(15).fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.text_primary'))
-              Text(this.selectedUri.length > 0 || this.document !== undefined ?
-                '文件只发送到当前电脑端服务。' : '从模拟器文件选择器中选择文档。')
-                .fontSize(11).fontColor($r('app.color.text_secondary'))
+                .fontColor($r('app.color.text_primary')).maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
             }
             .alignItems(HorizontalAlign.Start).width('100%').padding(14)
             .backgroundColor($r('app.color.surface_soft')).borderRadius(14)
-            Button('选择文档').width('100%').height(46)
-              .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
-              .enabled(!this.busy).onClick(this.onChooseDocument)
-            Button(this.busy ? '正在处理…' : '上传并检测区域').width('100%').height(50)
+            Row({ space: 10 }) {
+              Button('文件').layoutWeight(1).height(44)
+                .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
+                .enabled(!this.busy).onClick(this.onChooseDocument)
+              Button('内置 PDF').layoutWeight(1).height(44)
+                .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
+                .enabled(!this.busy).onClick(this.onUseBuiltInDocument)
+            }.width('100%')
+            Button(this.busy ? '处理中…' : '检测区域').width('100%').height(50)
               .fontColor($r('app.color.text_on_primary')).backgroundColor($r('app.color.primary'))
               .enabled(!this.busy && this.selectedUri.length > 0).onClick(this.onUploadAndDetect)
           }
@@ -59,12 +59,32 @@ export struct DocumentView {
             Column({ space: 10 }) {
               Row({ space: 8 }) {
                 Text('区域检测任务').fontSize(16).fontWeight(FontWeight.Medium)
-                  .fontColor($r('app.color.text_primary'))
-                StatusPill({ symbol: '◷', label: this.jobStatus, tone: this.jobStatus === 'failed' ? 'danger' : 'primary' })
+                  .fontColor($r('app.color.text_primary')).layoutWeight(1).maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                StatusPill({ symbol: taskPresentation(this.jobStatus).symbol,
+                  label: taskPresentation(this.jobStatus).label, tone: taskPresentation(this.jobStatus).tone })
               }
               Text(this.jobMessage).fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
-              if (this.jobStatus === 'queued' || this.jobStatus === 'running') {
+              if (this.jobStatus === 'queued' || this.jobStatus === 'running' ||
+                this.jobStatus === 'pausing' || this.jobStatus === 'cancelling') {
                 LoadingProgress().width('100%').height(4).color($r('app.color.primary'))
+              }
+              if (this.jobStatus === 'queued' || this.jobStatus === 'running' || this.jobStatus === 'pausing') {
+                Row({ space: 8 }) {
+                  Button(this.jobStatus === 'pausing' ? '继续' : '暂停').layoutWeight(1).height(42)
+                    .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
+                    .onClick(this.jobStatus === 'pausing' ? this.onResumeJob : this.onPauseJob)
+                  Button('终止').layoutWeight(1).height(42)
+                    .fontColor($r('app.color.danger')).backgroundColor($r('app.color.danger_soft'))
+                    .onClick(this.onCancelJob)
+                }.width('100%')
+              } else if (this.jobStatus === 'paused') {
+                Row({ space: 8 }) {
+                  Button('继续').layoutWeight(1).height(42).onClick(this.onResumeJob)
+                    .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
+                  Button('终止').layoutWeight(1).height(42).onClick(this.onCancelJob)
+                    .fontColor($r('app.color.danger')).backgroundColor($r('app.color.danger_soft'))
+                }.width('100%')
               }
             }
             .alignItems(HorizontalAlign.Start).width('100%').padding(16)
@@ -95,7 +115,8 @@ export struct DocumentView {
             .border({ width: 1, color: $r('app.color.border') })
           }
         }
-        .width('100%').padding({ left: 16, right: 16, top: 18, bottom: 28 })
+        .width('100%').constraintSize({ minHeight: '100%' })
+        .padding({ left: 16, right: 16, top: 18, bottom: 28 })
       }
       .width('100%').height('100%').scrollBar(BarState.Off)
     }

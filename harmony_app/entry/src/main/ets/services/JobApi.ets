@@ -30,4 +30,21 @@ export class JobApi {
     return ApiClient.requestJson<VisionJob>(baseUrl, apiKey, `/api/v1/jobs/${encodeURIComponent(jobId)}`,
       http.RequestMethod.GET, '读取任务失败')
   }
+
+  private static async control(baseUrl: string, apiKey: string, jobId: string, action: string): Promise<VisionJob> {
+    return ApiClient.requestJson<VisionJob>(baseUrl, apiKey,
+      `/api/v1/jobs/${encodeURIComponent(jobId)}/${action}`, http.RequestMethod.POST, '控制任务失败')
+  }
+
+  static pause(baseUrl: string, apiKey: string, jobId: string): Promise<VisionJob> {
+    return JobApi.control(baseUrl, apiKey, jobId, 'pause')
+  }
+
+  static resume(baseUrl: string, apiKey: string, jobId: string): Promise<VisionJob> {
+    return JobApi.control(baseUrl, apiKey, jobId, 'resume')
+  }
+
+  static cancel(baseUrl: string, apiKey: string, jobId: string): Promise<VisionJob> {
+    return JobApi.control(baseUrl, apiKey, jobId, 'cancel')
+  }
 }

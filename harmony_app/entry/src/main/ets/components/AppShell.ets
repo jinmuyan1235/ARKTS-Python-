@@ -2,6 +2,7 @@
 export struct AppShell {
   @Link currentTab: number
   @BuilderParam recognition: () => void
+  @BuilderParam batch: () => void
   @BuilderParam smiles: () => void
   @BuilderParam history: () => void
   @BuilderParam settings: () => void
@@ -50,19 +51,24 @@ export struct AppShell {
       .tabBar(this.tabBar($r('app.media.nav_recognition'), '识别', 0))
 
       TabContent() {
+        this.batch()
+      }
+      .tabBar(this.tabBar($r('app.media.nav_batch'), '批量', 1))
+
+      TabContent() {
         this.smiles()
       }
-      .tabBar(this.tabBar($r('app.media.nav_smiles'), 'SMILES', 1))
+      .tabBar(this.tabBar($r('app.media.nav_smiles'), 'SMILES', 2))
 
       TabContent() {
         this.history()
       }
-      .tabBar(this.tabBar($r('app.media.nav_history'), '历史', 2))
+      .tabBar(this.tabBar($r('app.media.nav_history'), '历史', 3))
 
       TabContent() {
         this.settings()
       }
-      .tabBar(this.tabBar($r('app.media.nav_settings'), '设置', 3))
+      .tabBar(this.tabBar($r('app.media.nav_settings'), '设置', 4))
     }
     .barHeight(66)
     .barBackgroundColor($r('app.color.nav_background'))

@@ -60,6 +60,23 @@ export class DocumentApi {
     )
   }
 
+  private static async control(baseUrl: string, apiKey: string, jobId: string, action: string): Promise<DocumentJob> {
+    return ApiClient.requestJson<DocumentJob>(baseUrl, apiKey,
+      `/api/v1/jobs/${encodeURIComponent(jobId)}/${action}`, http.RequestMethod.POST, '控制文档任务失败')
+  }
+
+  static pauseJob(baseUrl: string, apiKey: string, jobId: string): Promise<DocumentJob> {
+    return DocumentApi.control(baseUrl, apiKey, jobId, 'pause')
+  }
+
+  static resumeJob(baseUrl: string, apiKey: string, jobId: string): Promise<DocumentJob> {
+    return DocumentApi.control(baseUrl, apiKey, jobId, 'resume')
+  }
+
+  static cancelJob(baseUrl: string, apiKey: string, jobId: string): Promise<DocumentJob> {
+    return DocumentApi.control(baseUrl, apiKey, jobId, 'cancel')
+  }
+
   static async editRegion(
     baseUrl: string,
     apiKey: string,

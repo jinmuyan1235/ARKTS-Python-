@@ -10,17 +10,21 @@ export class AuthApi {
     username: string,
     displayName: string,
     password: string,
-    role: string
+    role: string,
+    accountType: string
   ): Promise<AuthResult> {
     return ApiClient.requestJson<AuthResult>(baseUrl, apiKey, '/api/v1/auth/register', http.RequestMethod.POST,
       '注册失败', 'application/json', JSON.stringify({
-        username: username, displayName: displayName, password: password, role: role
+        username: username, displayName: displayName, password: password, role: role, accountType: accountType
       }))
   }
 
-  static async login(baseUrl: string, apiKey: string, username: string, password: string): Promise<AuthResult> {
+  static async login(baseUrl: string, apiKey: string, username: string, password: string,
+    accountType: string): Promise<AuthResult> {
     return ApiClient.requestJson<AuthResult>(baseUrl, apiKey, '/api/v1/auth/login', http.RequestMethod.POST,
-      '登录失败', 'application/json', JSON.stringify({ username: username, password: password }))
+      '登录失败', 'application/json', JSON.stringify({
+        username: username, password: password, accountType: accountType
+      }))
   }
 
   static async me(baseUrl: string, apiKey: string): Promise<UserProfile> {

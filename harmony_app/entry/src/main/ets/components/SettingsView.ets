@@ -1,9 +1,11 @@
-import { UserProfile } from '../model/VisionResult'
+import { HealthResult, UserProfile } from '../model/VisionResult'
+import { TEAM_ROLE_OPTIONS } from '../model/TeamRoles'
 import { AppEmptyState, AppErrorState, LoadingSkeleton, MoleculeBackdrop, SectionHeader, StatusPill } from './CommonStates'
 import { PageHeader, ProfileAvatar } from './PageChrome'
 
 @Component
 export struct SettingsView {
+  @Prop isDeveloper: boolean = false
   @Prop currentUser: UserProfile | undefined = undefined
   @Prop members: UserProfile[] = []
   @Prop membersLoading: boolean = false
@@ -21,6 +23,7 @@ export struct SettingsView {
   @Prop savingSettings: boolean = false
   @Prop checking: boolean = false
   @Prop serviceSummary: string = ''
+  @Prop serviceHealth: HealthResult | undefined = undefined
   onChooseAvatar: () => void = () => {}
   onSaveProfile: () => void = () => {}
   onChangePassword: () => void = () => {}
@@ -28,6 +31,7 @@ export struct SettingsView {
   onCheckService: () => void = () => {}
   onLogout: () => void = () => {}
   onOpenGuide: () => void = () => {}
+  onOpenDatasetReview: () => void = () => {}
   onDisplayNameChanged: (value: string) => void = (_value: string) => {}
   onRoleChanged: (value: string) => void = (_value: string) => {}
   onOldPasswordChanged: (value: string) => void = (_value: string) => {}
@@ -47,8 +51,8 @@ export struct SettingsView {
       Scroll() {
         Column({ space: 16 }) {
           PageHeader({
-            title: '实验室设置',
-            subtitle: '管理团队身份、安全会话与电脑端识别服务。',
+            title: '设置',
+            subtitle: '',
             currentUser: this.currentUser,
             onOpenGuide: this.onOpenGuide
           })
@@ -66,8 +70,6 @@ export struct SettingsView {
             Column({ space: 3 }) {
               Text('术语与项目指南')
                 .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-              Text('面向非化学信息学专家，了解结果字段和使用边界。')
-                .fontSize(12).fontColor($r('app.color.text_secondary')).maxLines(2)
             }
             .alignItems(HorizontalAlign.Start)
             .layoutWeight(1)
@@ -82,6 +84,22 @@ export struct SettingsView {
           .onClick(this.onOpenGuide)
           .accessibilityText('打开化学信息学术语与项目指南')
 
+          if (this.isDeveloper) {
+            Row({ space: 12 }) {
+              Text('◎').fontSize(21).fontWeight(FontWeight.Bold).fontColor($r('app.color.accent'))
+                .textAlign(TextAlign.Center).width(44).height(44)
+                .backgroundColor($r('app.color.primary_soft')).borderRadius(14)
+              Column({ space: 3 }) {
+                Text('反馈数据审核').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              Text('进入 ›').fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.primary'))
+            }
+            .alignItems(VerticalAlign.Center).width('100%').padding(16)
+            .backgroundColor($r('app.color.surface')).border({ width: 1, color: $r('app.color.border') })
+            .borderRadius($r('app.float.card_radius')).onClick(this.onOpenDatasetReview)
+            .accessibilityText('打开反馈数据审核模块')
+          }
+
           if (this.currentUser !== undefined) {
             Column({ space: 14 }) {
               this.cardTitle('◉', '账号资料', `用户名 @${this.currentUser.username} 不可修改`)
@@ -90,8 +108,11 @@ export struct SettingsView {
                 Column({ space: 5 }) {
                   Text(this.currentUser.displayName)
                     .fontSize(19).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
-                  Text(this.currentUser.role.length > 0 ? this.currentUser.role : '项目组成员')
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+                  Text(this.isDeveloper ?
+                    (this.currentUser.role.length > 0 ? this.currentUser.role : '开发者') : '普通用户')
                     .fontSize(12).fontColor($r('app.color.primary'))
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
                   StatusPill({ symbol: '✓', label: '已登录', tone: 'success' })
                 }
                 .alignItems(HorizontalAlign.Start)
@@ -106,9 +127,24 @@ export struct SettingsView {
               TextInput({ text: this.displayName, placeholder: '显示名称' })
                 .width('100%').height(46).backgroundColor($r('app.color.surface_soft'))
                 .onChange((value: string) => this.onDisplayNameChanged(value))
-              TextInput({ text: this.role, placeholder: '组内角色（仅展示）' })
-                .width('100%').height(46).backgroundColor($r('app.color.surface_soft'))
-                .onChange((value: string) => this.onRoleChanged(value))
+              if (this.isDeveloper) {
+                Text('任务分类')
+                  .fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_body')).width('100%')
+                Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
+                  ForEach(TEAM_ROLE_OPTIONS, (option: string) => {
+                    Text(option).fontSize(11)
+                      .fontWeight(this.role === option ? FontWeight.Medium : FontWeight.Regular)
+                      .fontColor(this.role === option ? $r('app.color.text_on_primary') : $r('app.color.text_body'))
+                      .textAlign(TextAlign.Center).width('31%').height(32)
+                      .backgroundColor(this.role === option ? $r('app.color.primary') : $r('app.color.surface_soft'))
+                      .border({ width: 1, color: this.role === option ? $r('app.color.primary') : $r('app.color.border') })
+                      .borderRadius(11).margin({ right: 6, bottom: 6 })
+                      .onClick(() => this.onRoleChanged(option))
+                  }, (option: string) => option)
+                }.width('100%')
+              } else {
+                StatusPill({ symbol: '●', label: '普通用户', tone: 'primary' })
+              }
               Button(this.profileSaving ? '保存中…' : '保存账号资料')
                 .width('100%').height(46).enabled(!this.profileSaving)
                 .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
@@ -121,7 +157,8 @@ export struct SettingsView {
             .borderRadius($r('app.float.card_radius'))
           }
 
-          Column({ space: 14 }) {
+          if (this.isDeveloper) {
+            Column({ space: 14 }) {
             this.cardTitle('⌬', '项目组成员', `${this.members.length} 名成员共享分析历史`)
             if (this.membersLoading && this.members.length === 0) {
               LoadingSkeleton({ rows: 1 })
@@ -137,8 +174,10 @@ export struct SettingsView {
                       ProfileAvatar({ user: member, avatarSize: 50 })
                       Text(member.displayName)
                         .fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary')).maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%').textAlign(TextAlign.Center)
                       Text(member.role.length > 0 ? member.role : '组员')
                         .fontSize(10).fontColor($r('app.color.text_secondary')).maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%').textAlign(TextAlign.Center)
                     }
                     .width(72)
                     .padding({ top: 10, bottom: 10 })
@@ -155,15 +194,18 @@ export struct SettingsView {
           .width('100%').padding(18)
           .backgroundColor($r('app.color.surface'))
           .border({ width: 1, color: $r('app.color.border') })
-          .borderRadius($r('app.float.card_radius'))
+            .borderRadius($r('app.float.card_radius'))
+          }
 
           Column({ space: 12 }) {
             this.cardTitle('◇', '密码与会话安全', '修改密码后其他旧会话会立即失效')
-            Row({ space: 8 }) {
-              StatusPill({ symbol: '◆', label: 'API 密钥：Asset Store', tone: 'success' })
-              StatusPill({ symbol: '◆', label: '令牌：Asset Store', tone: 'success' })
+            if (this.isDeveloper) {
+              Row({ space: 8 }) {
+                StatusPill({ symbol: '◆', label: 'API 密钥：Asset Store', tone: 'success' })
+                StatusPill({ symbol: '◆', label: '令牌：Asset Store', tone: 'success' })
+              }
+              .width('100%')
             }
-            .width('100%')
             TextInput({ text: this.oldPassword, placeholder: '当前密码' })
               .type(InputType.Password).height(46).backgroundColor($r('app.color.surface_soft'))
               .onChange((value: string) => this.onOldPasswordChanged(value))
@@ -184,7 +226,8 @@ export struct SettingsView {
           .border({ width: 1, color: $r('app.color.border') })
           .borderRadius($r('app.float.card_radius'))
 
-          Column({ space: 12 }) {
+          if (this.isDeveloper) {
+            Column({ space: 12 }) {
             this.cardTitle('⚗', '电脑端识别服务', '局域网连接 DECIMER、MolScribe 或演示后端')
             Text('服务地址').fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_body')).width('100%')
             TextInput({ text: this.apiBaseUrl, placeholder: 'http://192.168.5.13:8000' })
@@ -213,18 +256,74 @@ export struct SettingsView {
           .width('100%').padding(18)
           .backgroundColor($r('app.color.surface'))
           .border({ width: 1, color: $r('app.color.border') })
-          .borderRadius($r('app.float.card_radius'))
+            .borderRadius($r('app.float.card_radius'))
 
-          Column({ space: 8 }) {
-            this.cardTitle('i', '模拟器连接提示', '确保手机模拟器可以访问电脑')
-            Text('• 使用电脑局域网 IP，不能使用 127.0.0.1。').fontSize(12).fontColor($r('app.color.text_secondary'))
-            Text('• Windows 防火墙需允许 TCP 8000 端口。').fontSize(12).fontColor($r('app.color.text_secondary'))
-            Text('• 保持电脑端 PowerShell 服务窗口运行。').fontSize(12).fontColor($r('app.color.text_secondary'))
+            Column({ space: 10 }) {
+            this.cardTitle('◫', '模型运行状态', '')
+            if (this.serviceHealth === undefined) {
+              Text('点击“检测连接”获取状态')
+                .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
+            } else {
+              Row() {
+                StatusPill({
+                  symbol: this.serviceHealth.modelRuntime.state === 'ready' ? '✓' : '!',
+                  label: this.serviceHealth.modelRuntime.label,
+                  tone: this.serviceHealth.modelRuntime.state === 'ready' ? 'success' :
+                    (this.serviceHealth.modelRuntime.state === 'unavailable' ? 'danger' : 'warning')
+                })
+                Blank()
+                Text(this.serviceHealth.modelRuntime.modelName)
+                  .fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }.width('100%')
+              Text(`${this.serviceHealth.modelRuntime.modelVersion === null ? '版本未知' : this.serviceHealth.modelRuntime.modelVersion} · ` +
+                `${this.serviceHealth.modelRuntime.device === null ? '设备未知' : this.serviceHealth.modelRuntime.device}`)
+                .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
+              Row({ space: 8 }) {
+                StatusPill({ symbol: '◆', label: this.serviceHealth.modelRuntime.weights.label,
+                  tone: this.serviceHealth.modelRuntime.weights.state === 'fail' ? 'danger' : 'primary' })
+                StatusPill({ symbol: '◷', label: `预热 ${this.serviceHealth.modelRuntime.warmup.label}`,
+                  tone: this.serviceHealth.modelRuntime.warmup.state === 'fail' ? 'danger' : 'primary' })
+              }.width('100%')
+              if (this.serviceHealth.taskQueue.active > 0) {
+                Row({ space: 8 }) {
+                  StatusPill({ symbol: '↻', label: `排队 ${this.serviceHealth.taskQueue.queued}`, tone: 'primary' })
+                  StatusPill({ symbol: '▶', label: `运行 ${this.serviceHealth.taskQueue.running}`, tone: 'success' })
+                  if (this.serviceHealth.taskQueue.paused > 0) {
+                    StatusPill({ symbol: 'Ⅱ', label: `暂停 ${this.serviceHealth.taskQueue.paused}`, tone: 'warning' })
+                  }
+                }.width('100%')
+              }
+              if (this.serviceHealth.modelRuntime.failureReasons.length > 0) {
+                Column({ space: 5 }) {
+                  ForEach(this.serviceHealth.modelRuntime.failureReasons.slice(0, 3), (reason: string) => {
+                    Text(`• ${reason}`).fontSize(11).lineHeight(17).fontColor($r('app.color.text_secondary')).width('100%')
+                  })
+                }.alignItems(HorizontalAlign.Start).width('100%')
+                  .padding(10).backgroundColor($r('app.color.danger_soft')).borderRadius(10)
+              }
+              if (this.serviceHealth.taskQueue.failed > 0) {
+                Text(`${this.serviceHealth.taskQueue.failed} 条历史任务中断`)
+                  .fontSize(11).fontColor($r('app.color.text_tertiary')).width('100%')
+              }
+            }
           }
           .alignItems(HorizontalAlign.Start)
           .width('100%').padding(18)
           .backgroundColor($r('app.color.surface'))
-          .borderRadius($r('app.float.card_radius'))
+          .border({ width: 1, color: $r('app.color.border') })
+            .borderRadius($r('app.float.card_radius'))
+
+            Column({ space: 8 }) {
+            this.cardTitle('i', '连接提示', '')
+            Text('使用电脑局域网 IP，并保持 8000 端口服务运行。')
+              .fontSize(12).fontColor($r('app.color.text_secondary'))
+          }
+          .alignItems(HorizontalAlign.Start)
+          .width('100%').padding(18)
+          .backgroundColor($r('app.color.surface'))
+            .borderRadius($r('app.float.card_radius'))
+          }
 
           Button('退出当前账号')
             .width('100%').height(48)

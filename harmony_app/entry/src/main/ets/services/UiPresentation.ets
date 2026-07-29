@@ -71,6 +71,18 @@ export function taskPresentation(status: string): TaskPresentation {
   if (status === 'running') {
     return { symbol: '⌬', label: '模型识别中', tone: 'primary', terminal: false }
   }
+  if (status === 'paused') {
+    return { symbol: 'Ⅱ', label: '已暂停', tone: 'warning', terminal: false }
+  }
+  if (status === 'pausing') {
+    return { symbol: 'Ⅱ', label: '正在暂停', tone: 'warning', terminal: false }
+  }
+  if (status === 'cancelling') {
+    return { symbol: '×', label: '正在终止', tone: 'warning', terminal: false }
+  }
+  if (status === 'cancelled') {
+    return { symbol: '×', label: '已终止', tone: 'neutral', terminal: true }
+  }
   if (status === 'completed') {
     return { symbol: '✓', label: '识别完成', tone: 'success', terminal: true }
   }

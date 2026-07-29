@@ -150,6 +150,50 @@ export interface HealthResult {
   backend: string
   maxUploadBytes: number
   apiVersion: string
+  modelRuntime: ModelRuntimeStatus
+  taskQueue: TaskQueueStatus
+}
+
+export interface HealthCheckStatus {
+  state: string
+  label: string
+  message: string
+  sha256?: string | null
+  durationMs?: number | null
+}
+
+export interface ModelRuntimeStatus {
+  state: string
+  label: string
+  modelName: string
+  modelVersion: string | null
+  device: string | null
+  message: string
+  checkedAt: string | null
+  cached: boolean
+  weights: HealthCheckStatus
+  warmup: HealthCheckStatus
+  failureReasons: string[]
+}
+
+export interface TaskStatusCounts {
+  queued: number
+  running: number
+  paused: number
+  completed: number
+  failed: number
+  cancelled: number
+}
+
+export interface TaskQueueStatus {
+  queued: number
+  running: number
+  paused: number
+  active: number
+  failed: number
+  single: TaskStatusCounts
+  batch: TaskStatusCounts
+  recentFailureReasons: string[]
 }
 
 export interface VisionSample {
@@ -198,6 +242,7 @@ export interface UserProfile {
   username: string
   displayName: string
   role: string
+  accountType: string
   avatarUrl: string | null
   createdAt: string
 }
