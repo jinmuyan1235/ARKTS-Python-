@@ -1,12 +1,14 @@
 import picker from '@ohos.file.picker'
 import promptAction from '@ohos.promptAction'
 import router from '@ohos.router'
+import { common } from '@kit.AbilityKit'
 import { DocumentJob, DocumentResult } from '../model/DocumentResult'
 import { DocumentView } from '../components/DocumentView'
 import { ApiClient } from '../services/ApiClient'
 import { DocumentApi } from '../services/DocumentApi'
 import { SettingsStore, StoredSettings } from '../services/SettingsStore'
 import { userFacingError } from '../services/AppUtils'
+import { BuiltInTestFiles, BuiltInTestSet } from '../services/BuiltInTestSet'
 
 @Entry
 @Component
@@ -14,6 +16,7 @@ struct DocumentWorkspace {
   @State apiBaseUrl: string = ''
   @State apiKey: string = ''
   @State selectedUri: string = ''
+  @State builtInDocument: string = ''
   @State document: DocumentResult | undefined = undefined
   @State jobStatus: string = ''
   @State jobMessage: string = ''
@@ -30,6 +33,13 @@ struct DocumentWorkspace {
   }
 
   private async initialize(): Promise<void> {
+    try {
+      const builtIn: BuiltInTestFiles = await BuiltInTestSet.prepare(
+        getContext(this) as common.UIAbilityContext)
+      this.builtInDocument = builtIn.document
+    } catch (_) {
+      this.builtInDocument = ''
+    }
     const settings: StoredSettings = await SettingsStore.load(getContext(this))
     this.apiBaseUrl = settings.apiBaseUrl
     this.apiKey = settings.apiKey
@@ -52,6 +62,14 @@ struct DocumentWorkspace {
     } catch (error) {
       await promptAction.openToast({ message: userFacingError(error as Object, '选择文档失败，请重试。') })
     }
+  }
+
+  private useBuiltInDocument(): void {
+    if (this.builtInDocument.length === 0) return
+    this.selectedUri = this.builtInDocument
+    this.document = undefined
+    this.jobStatus = ''
+    this.jobMessage = ''
   }
 
   private async uploadAndDetect(): Promise<void> {
@@ -93,7 +111,7 @@ struct DocumentWorkspace {
       const job: DocumentJob = await DocumentApi.job(this.apiBaseUrl, this.apiKey, this.activeJobId)
       this.jobStatus = job.status
       this.jobMessage = job.message
-      if (job.status === 'completed' || job.status === 'failed') {
+      if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
         this.stopPolling()
         this.busy = false
         if (this.document !== undefined) {
@@ -105,6 +123,30 @@ struct DocumentWorkspace {
       this.busy = false
       this.jobStatus = 'failed'
       this.jobMessage = userFacingError(error as Object, '查询区域检测任务失败。')
+    }
+  }
+
+  private async controlJob(action: string): Promise<void> {
+    if (this.activeJobId.length === 0) return
+    try {
+      let job: DocumentJob
+      if (action === 'pause') {
+        job = await DocumentApi.pauseJob(this.apiBaseUrl, this.apiKey, this.activeJobId)
+      } else if (action === 'resume') {
+        job = await DocumentApi.resumeJob(this.apiBaseUrl, this.apiKey, this.activeJobId)
+      } else {
+        job = await DocumentApi.cancelJob(this.apiBaseUrl, this.apiKey, this.activeJobId)
+      }
+      this.jobStatus = job.status
+      this.jobMessage = job.message
+      if (job.status === 'cancelled') {
+        this.stopPolling()
+        this.busy = false
+      } else {
+        this.startPolling()
+      }
+    } catch (error) {
+      await promptAction.openToast({ message: userFacingError(error as Object, '控制区域检测任务失败。') })
     }
   }
 
@@ -145,9 +187,13 @@ struct DocumentWorkspace {
         jobStatus: this.jobStatus,
         jobMessage: this.jobMessage,
         onChooseDocument: (): void => { this.chooseDocument() },
+        onUseBuiltInDocument: (): void => { this.useBuiltInDocument() },
         onUploadAndDetect: (): void => { this.uploadAndDetect() },
         onOpenReview: (): void => { this.openReview() },
-        onRefresh: (): void => { this.refreshDocument() }
+        onRefresh: (): void => { this.refreshDocument() },
+        onPauseJob: (): void => { this.controlJob('pause') },
+        onResumeJob: (): void => { this.controlJob('resume') },
+        onCancelJob: (): void => { this.controlJob('cancel') }
       })
       .layoutWeight(1)
     }

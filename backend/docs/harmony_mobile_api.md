@@ -43,7 +43,7 @@ Authorization: Bearer <登录返回的 token>
 
 | 方法 | 地址 | 用途 |
 |---|---|---|
-| GET | `/api/v1/health` | 服务连接检测 |
+| GET | `/api/v1/health` | 真实模型、版本、设备、权重、Warm-up、任务队列与失败原因检测 |
 | POST | `/api/v1/auth/register` | 注册本地组员账号并建立会话 |
 | POST | `/api/v1/auth/login` | 登录并建立 7 天会话 |
 | GET | `/api/v1/auth/me` | 当前账号资料 |
@@ -56,6 +56,14 @@ Authorization: Bearer <登录返回的 token>
 | POST | `/api/v1/jobs/images` | 上传图片并创建后台任务 |
 | POST | `/api/v1/jobs/samples/{id}` | 创建内置示例任务 |
 | GET | `/api/v1/jobs/{jobId}` | 查询任务状态和完成结果 |
+| POST | `/api/v1/batch-jobs` | 使用 `files` 多文件字段上传图片并创建持久化批量任务 |
+| GET | `/api/v1/batch-jobs/{jobId}` | 查询总进度、分类统计和已完成的逐项结果 |
+| POST | `/api/v1/batch-jobs/{jobId}/pause` | 在当前图片结束后的安全边界暂停 |
+| POST | `/api/v1/batch-jobs/{jobId}/resume` | 继续暂停任务或从 checkpoint 恢复中断任务 |
+| POST | `/api/v1/batch-jobs/{jobId}/cancel` | 请求取消任务 |
+| POST | `/api/v1/batch-jobs/{jobId}/retry-failed` | 创建只包含失败图片的新批量任务 |
+| GET | `/api/v1/batch-jobs/{jobId}/exports` | 生成批量 CSV、JSON、PDF 与正式结构导出清单 |
+| GET | `/api/v1/batch-jobs/{jobId}/exports/{format}` | 获取指定批量格式的短时签名下载信息 |
 | POST | `/api/v1/documents` | 上传 PDF、页面图片或 ZIP 文档 |
 | POST | `/api/v1/documents/{id}/detect` | 创建区域检测后台任务 |
 | GET | `/api/v1/documents/{id}` | 读取安全的页面预览与区域列表 |
@@ -68,6 +76,26 @@ Authorization: Bearer <登录返回的 token>
 | PUT | `/api/v1/analyses/{id}/favorite` | HarmonyOS 网络组件兼容调用 |
 | DELETE | `/api/v1/analyses/{id}` | 只删除 SQLite 索引 |
 | POST | `/api/v1/analyses/{id}/review` | 确认、修正后确认、标记无法确认或撤销确认 |
+| GET | `/api/v1/analyses/{id}/exports` | 生成单条 CSV、JSON、PDF、SMI、MOL、SDF、ZIP 导出清单 |
+| GET | `/api/v1/analyses/{id}/exports/{format}` | 获取指定单条格式的短时签名下载信息 |
+| GET | `/api/v1/feedback?status=...` | 分页读取反馈审核列表与服务端训练资格 |
+| GET | `/api/v1/feedback/{id}` | 读取原图、预测、人工修正、来源许可和审核记录 |
+| PATCH/PUT | `/api/v1/feedback/{id}/review` | 核验通过、退回、拒绝、标记重复或许可不清 |
+| GET | `/api/v1/feedback/manifest` | 生成仅含已核验样本的短时签名训练 Manifest |
+
+`health.modelRuntime` 的 `state`、`label`、模型名称/版本、设备、权重和 Warm-up 状态均由
+`src.runtime.health.run_production_health_check` 的真实检查项生成。Warm-up 未配置时明确返回 `skip`，
+demo 后端明确返回 `demo / 演示后端（非真实模型）`；移动端不根据后端名称或配置自行判断可用性。
+`taskQueue` 直接统计单图任务 JSON 和 `BatchJobStore` 当前状态，并返回最近失败原因。
+
+反馈审核 API 复用 `src.feedback.FeedbackReviewService`。每条记录的 `trainingEligibility` 由后端根据
+核验状态、审核人、训练标记、修正 SMILES、原图和重复状态计算。Manifest 导出继续经过
+`export_feedback_manifest` 门禁，待审核、退回、拒绝、许可不清、缺少审核人或无效修正样本不会进入训练集。
+
+导出清单中的 `downloadUrl` 是默认约 5 分钟有效的签名 `/media/v1/exports/*` 地址，
+下载时不需要把 API 密钥或登录令牌追加到 URL。过期地址返回 410，移动端会刷新清单后重试一次。
+CSV、JSON 和 PDF 可以包含候选或失败结果，用于审核与归档；正式 SMI、MOL、SDF 和结构 ZIP
+只对人工确认的有效结构开放。批量导出会逐项过滤，因此未确认候选不会进入任何正式结构文件。
 
 结果详情在保留旧字段的基础上增加 `sourceImageUrl`、`identity`、`imageQuality`、
 `lipinskiDetail`、`recognitionTrace` 和 `review`。`sourceImageUrl` 指向签名的
@@ -100,9 +128,12 @@ OCSR；只有审核接口明确确认且区域类型为 `molecule` 时才创建�
 ## 任务与历史
 
 - 任务 JSON 保存在 `data\api_jobs`，单工作线程串行复用已加载模型。
+- 鸿蒙批量任务复用 `BatchAnalyzer`、`BatchJobStore` 和独立批处理进程，状态与 checkpoint 保存在 `data\api_batch_jobs`。任务按登录账号隔离，接口不返回输入目录、日志或导出文件等电脑路径。
+- 批量状态把 `accepted`、`accepted_with_warning`、`review_needed`、`rejected`、`failed`、`skipped` 映射为互斥统计；处理中会从 checkpoint 返回已经完成的逐项结果。任务结束后会按 `analysisId` 合并最新人工复核状态，逐项返回 `confirmed`、`reviewStatus`，并从 `reviewNeeded` 中移除已确认结果。
 - 文档上传清单保存在 `data\mobile_documents`，页面、区域与审核审计继续使用现有文档结果 JSON。
+- 移动端导出文件复制到 `data\mobile_exports` 的隔离短时目录；签名过期后由导出存储自动清理。
 - 移动端前台每 2 秒查询一次；切出识别 Tab 后停止查询，返回后继续。
-- 活动任务 ID、服务地址和界面状态保存在 HarmonyOS Preferences。
+- 单图活动任务 ID、未完成批量任务 ID、服务地址和界面状态保存在 HarmonyOS Preferences。
 - API 密钥和登录令牌保存在 HarmonyOS Asset Store；首次升级会迁移并清除 Preferences 中的旧敏感值。密码不保存在移动端。
 - 每名组员使用独立账号、姓名、角色和头像；头像保存在 `data\avatars`。
 - 新建图片任务和 SMILES 分析会记录创建者；旧记录继续保留并显示为“历史数据”。
@@ -113,6 +144,7 @@ OCSR；只有审核接口明确确认且区域类型为 `molecule` 时才创建�
 - 图片复核先校验 SMILES。非法输入返回 422 且不写报告；合法修正会重绘结构、重新计算性质并标记人工确认。
 - 每次确认、撤销或无法确认都会在报告 JSON 中记录操作组员、角色、时间、SMILES、原因和备注，SQLite 无需新增审计表。
 - ADMET 未启用或不可用时返回明确状态和说明，不生成预测值。
+- 设置页模型状态卡只渲染 `/health` 返回的检测状态；反馈审核页不能绕过后端训练资格门禁。
 
 ## 模拟器连接
 

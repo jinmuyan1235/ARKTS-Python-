@@ -19,7 +19,8 @@ from pathlib import Path
 import re
 import shutil
 from threading import Lock
-from typing import Any, AsyncIterator, Callable, Literal
+import time
+from typing import Any, AsyncIterator, Callable, Iterable, Literal, Mapping
 from uuid import uuid4
 
 from fastapi import (
@@ -50,6 +51,14 @@ from src.analysis.correction import (
     revoke_structure_confirmation,
 )
 from src.analysis.molecule_report import MoleculeReportGenerator
+from src.analysis.batch_analyzer import flatten_report
+from src.export.mobile_export_center import (
+    EXPORT_FORMATS,
+    FORMAL_ONLY_FORMATS,
+    build_batch_exports,
+    build_single_exports,
+)
+from src.feedback.review_service import FeedbackReviewService
 from src.chem.smiles_validator import validate_smiles
 from src.documents.input_loader import DocumentInputError
 from src.documents.mobile_store import MobileDocumentStore
@@ -65,8 +74,22 @@ from src.runtime.run_store import (
     save_report_for_existing_run,
     save_run_report,
 )
+from src.runtime.batch_inputs import batch_input_limits
+from src.runtime.batch_job_store import BatchJobStore
+from src.runtime.job_registry import (
+    cancel_batch_job,
+    load_batch_job_result,
+    pause_batch_job,
+    refresh_batch_job,
+    resume_batch_job,
+    start_batch_job_from_uploads,
+    start_batch_retry_job,
+)
+from src.runtime.mobile_export_store import MobileExportStore
+from src.runtime.health import run_production_health_check
 from src.storage.analysis_repository import AnalysisRepository, record_report, utc_now
 from src.storage.auth_repository import AuthRepository
+from src.utils.file_utils import safe_stem
 
 
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
@@ -74,6 +97,7 @@ ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp", "
 AVATAR_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 MAX_AVATAR_BYTES = 3 * 1024 * 1024
 MAX_DOCUMENT_BYTES = int(config.DOCUMENT_MAX_FILE_SIZE_MB * 1024 * 1024)
+MOBILE_EXPORT_TTL_SECONDS = max(60, int(os.getenv("MOBILE_EXPORT_TTL_SECONDS", "300")))
 ANALYSIS_ID_PATTERN = re.compile(r"^[a-fA-F0-9]{32}$")
 JOB_ID_PATTERN = re.compile(r"^[a-fA-F0-9]{32}$")
 INFERENCE_LOCK = Lock()
@@ -107,16 +131,24 @@ class ReviewRequest(BaseModel):
     note: str | None = Field(default=None, max_length=300)
 
 
+class FeedbackReviewRequest(BaseModel):
+    action: Literal["approve", "return", "reject", "duplicate", "license_unclear"]
+    note: str = Field(default="", max_length=500)
+    duplicate_of: str = Field(default="", alias="duplicateOf", max_length=128)
+
+
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=32)
     display_name: str = Field(alias="displayName", min_length=1, max_length=40)
     password: str = Field(min_length=8, max_length=128)
     role: str = Field(default="", max_length=40)
+    account_type: Literal["user", "developer"] = Field(default="developer", alias="accountType")
 
 
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
+    account_type: Literal["user", "developer"] | None = Field(default=None, alias="accountType")
 
 
 class ProfileRequest(BaseModel):
@@ -177,6 +209,23 @@ def require_user(authorization: str | None = Header(default=None, alias="Authori
     return user
 
 
+def require_developer(user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    if str(user.get("account_type") or "developer") != "developer":
+        raise HTTPException(status_code=403, detail="此功能仅对开发者开放。")
+    return user
+
+
+def _is_developer(user: Mapping[str, Any]) -> bool:
+    return str(user.get("account_type") or "developer") == "developer"
+
+
+def _ensure_analysis_access(row: Mapping[str, Any], user: Mapping[str, Any]) -> None:
+    if _is_developer(user):
+        return
+    if str(row.get("owner_user_id") or "") != str(user.get("user_id") or ""):
+        raise HTTPException(status_code=404, detail="分析记录不存在或无权访问。")
+
+
 def _media_token(kind: str, resource_id: str) -> str:
     key = _configured_api_key()
     return hmac.new(key.encode("utf-8"), f"{kind}:{resource_id}".encode("utf-8"), hashlib.sha256).hexdigest()
@@ -186,6 +235,20 @@ def _check_media_token(kind: str, resource_id: str, token: str) -> None:
     expected = _media_token(kind, resource_id)
     if not token or not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="媒体访问令牌无效。")
+
+
+def _expiring_media_token(kind: str, resource_id: str, expires: int) -> str:
+    key = _configured_api_key()
+    payload = f"{kind}:{resource_id}:{expires}"
+    return hmac.new(key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _check_expiring_media_token(kind: str, resource_id: str, expires: int, token: str) -> None:
+    if expires < int(time.time()):
+        raise HTTPException(status_code=410, detail="下载链接已过期，请返回导出中心刷新。")
+    expected = _expiring_media_token(kind, resource_id, expires)
+    if not token or not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="下载令牌无效。")
 
 
 def _user_dto(user: dict[str, Any], request: Request) -> dict[str, Any]:
@@ -202,6 +265,7 @@ def _user_dto(user: dict[str, Any], request: Request) -> dict[str, Any]:
         "username": str(user.get("username") or ""),
         "displayName": str(user.get("display_name") or ""),
         "role": str(user.get("role") or ""),
+        "accountType": str(user.get("account_type") or "developer"),
         "avatarUrl": avatar_url,
         "createdAt": str(user.get("created_at") or ""),
     }
@@ -312,6 +376,17 @@ def _structure_media_url(report: dict[str, Any], request: Request) -> str | None
     return str(url.include_query_params(token=_media_token("analysis", analysis_id)))
 
 
+def _managed_analysis_media_path(path: Path, report_root: Path) -> bool:
+    """Allow report-local files and managed batch/run files, never arbitrary host paths."""
+    for root in (report_root, Path(config.DATA_DIR).expanduser().resolve()):
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _source_media_url(
     report: dict[str, Any],
     request: Request,
@@ -328,7 +403,8 @@ def _source_media_url(
     try:
         input_path = Path(str(input_data.get("path"))).expanduser().resolve()
         report_path = Path(str((record or {}).get("report_path") or "")).expanduser().resolve()
-        input_path.relative_to(report_path.parent)
+        if not _managed_analysis_media_path(input_path, report_path.parent):
+            return None
     except (OSError, ValueError, TypeError):
         return None
     if not input_path.is_file() or input_path.suffix.lower() not in config.SUPPORTED_IMAGE_EXTENSIONS:
@@ -637,6 +713,8 @@ class JobStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self.executor = executor
         self.lock = Lock()
+        self.work_items: dict[str, Callable[[], None]] = {}
+        self.work_items_lock = Lock()
 
     def _path(self, job_id: str) -> Path:
         return self.root / f"{job_id}.json"
@@ -682,6 +760,18 @@ class JobStore:
         except (OSError, json.JSONDecodeError):
             return None
 
+    def list_jobs(self, limit: int = 200) -> list[dict[str, Any]]:
+        jobs: list[dict[str, Any]] = []
+        for path in self.root.glob("*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                jobs.append(payload)
+        jobs.sort(key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""), reverse=True)
+        return jobs[:limit]
+
     def update(self, job_id: str, **values: Any) -> dict[str, Any]:
         job = self.load(job_id)
         if job is None:
@@ -696,7 +786,9 @@ class JobStore:
         generator: MoleculeReportGenerator,
         run: ImageRun,
     ) -> None:
-        self.executor.submit(self._execute, str(job["jobId"]), generator, run)
+        job_id = str(job["jobId"])
+        self._remember_work(job_id, lambda: self._execute(job_id, generator, run))
+        self._enqueue(job_id)
 
     def submit_task(
         self,
@@ -707,14 +799,86 @@ class JobStore:
         failed_message: str = "任务执行失败，请重试。",
     ) -> None:
         """Run a non-image task on the same serial worker as model inference."""
-        self.executor.submit(
-            self._execute_task,
-            str(job["jobId"]),
-            task,
-            running_message,
-            completed_message,
-            failed_message,
+        job_id = str(job["jobId"])
+        self._remember_work(
+            job_id,
+            lambda: self._execute_task(
+                job_id, task, running_message, completed_message, failed_message
+            ),
         )
+        self._enqueue(job_id)
+
+    def _remember_work(self, job_id: str, work: Callable[[], None]) -> None:
+        with self.work_items_lock:
+            self.work_items[job_id] = work
+
+    def _forget_work(self, job_id: str) -> None:
+        with self.work_items_lock:
+            self.work_items.pop(job_id, None)
+
+    def _enqueue(self, job_id: str) -> None:
+        with self.work_items_lock:
+            work = self.work_items.get(job_id)
+        if work is not None:
+            self.executor.submit(work)
+
+    def pause(self, job_id: str) -> dict[str, Any]:
+        job = self.load(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        status = str(job.get("status") or "")
+        if status == "queued":
+            return self.update(job_id, status="paused", message="任务已暂停，可稍后继续。")
+        if status == "running":
+            return self.update(
+                job_id,
+                status="pausing",
+                message="正在等待当前推理到达安全边界；完成前仍可终止。",
+            )
+        if status in {"paused", "pausing"}:
+            return job
+        raise ValueError("当前任务状态不能暂停。")
+
+    def resume(self, job_id: str) -> dict[str, Any]:
+        job = self.load(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        status = str(job.get("status") or "")
+        if status == "paused":
+            updated = self.update(job_id, status="queued", message="任务已继续，正在等待执行。")
+            self._enqueue(job_id)
+            return updated
+        if status == "pausing":
+            return self.update(job_id, status="running", message="已取消暂停请求，任务继续执行。")
+        if status in {"queued", "running"}:
+            return job
+        raise ValueError("当前任务状态不能继续。")
+
+    def cancel(self, job_id: str) -> dict[str, Any]:
+        job = self.load(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        status = str(job.get("status") or "")
+        if status in {"queued", "paused"}:
+            self._forget_work(job_id)
+            return self.update(job_id, status="cancelled", message="任务已终止。")
+        if status in {"running", "pausing"}:
+            return self.update(
+                job_id,
+                status="cancelling",
+                message="已请求终止；当前推理返回后将丢弃结果。",
+            )
+        if status in {"cancelled", "cancelling"}:
+            return job
+        raise ValueError("当前任务状态不能终止。")
+
+    def _may_start(self, job_id: str) -> bool:
+        job = self.load(job_id)
+        return job is not None and str(job.get("status") or "") == "queued"
+
+    def _cancel_requested(self, job_id: str) -> bool:
+        job = self.load(job_id) or {}
+        return str(job.get("status") or "") in {"cancelled", "cancelling"}
 
     def _execute_task(
         self,
@@ -724,9 +888,14 @@ class JobStore:
         completed_message: str,
         failed_message: str,
     ) -> None:
+        if not self._may_start(job_id):
+            return
         self.update(job_id, status="running", message=running_message)
         try:
             result = task()
+            if self._cancel_requested(job_id):
+                self.update(job_id, status="cancelled", message="任务已终止，结果未保存到移动端任务。")
+                return
             values: dict[str, Any] = {
                 "status": "completed",
                 "message": completed_message,
@@ -740,14 +909,24 @@ class JobStore:
             # Do not send filesystem paths, dependency details or model stack
             # information to the mobile UI. Server logs remain the diagnostic
             # source for an operator.
-            self.update(job_id, status="failed", message=failed_message)
+            if self._cancel_requested(job_id):
+                self.update(job_id, status="cancelled", message="任务已终止。")
+            else:
+                self.update(job_id, status="failed", message=failed_message)
+        finally:
+            self._forget_work(job_id)
 
     def _execute(self, job_id: str, generator: MoleculeReportGenerator, run: ImageRun) -> None:
+        if not self._may_start(job_id):
+            return
         self.update(job_id, status="running", message="模型正在分析图片。")
         try:
             job = self.load(job_id) or {}
             owner_user_id = str(job.get("ownerUserId") or "") or None
             report = _run_analysis(generator, run, owner_user_id)
+            if self._cancel_requested(job_id):
+                self.update(job_id, status="cancelled", message="任务已终止，结果未保存到移动端任务。")
+                return
             if report.get("status") == "success":
                 self.update(
                     job_id,
@@ -763,7 +942,12 @@ class JobStore:
                     analysisId=str(report.get("analysis_id") or run.analysis_id),
                 )
         except Exception as exc:
-            self.update(job_id, status="failed", message=f"模型分析失败：{exc}")
+            if self._cancel_requested(job_id):
+                self.update(job_id, status="cancelled", message="任务已终止。")
+            else:
+                self.update(job_id, status="failed", message=f"模型分析失败：{exc}")
+        finally:
+            self._forget_work(job_id)
 
     def reconcile_after_restart(self) -> None:
         repository = AnalysisRepository()
@@ -772,7 +956,9 @@ class JobStore:
                 job = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            if not isinstance(job, dict) or job.get("status") not in {"queued", "running"}:
+            if not isinstance(job, dict) or job.get("status") not in {
+                "queued", "running", "paused", "pausing", "cancelling"
+            }:
                 continue
             analysis_id = str(job.get("analysisId") or "")
             report = repository.load_report(analysis_id) if analysis_id else None
@@ -789,7 +975,10 @@ class JobStore:
                         )
                 except (OSError, json.JSONDecodeError):
                     report = None
-            if report and report.get("status") == "success":
+            if job.get("status") == "cancelling":
+                job["status"] = "cancelled"
+                job["message"] = "服务重启后已完成终止请求。"
+            elif report and report.get("status") == "success":
                 job["status"] = "completed"
                 job["message"] = "服务重启后已从报告恢复完成状态。"
             else:
@@ -806,6 +995,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.generator = MoleculeReportGenerator(config.OCSR_BACKEND, config.RUNS_DIR)
     app.state.executor = executor
     app.state.job_store = JobStore(config.DATA_DIR / "api_jobs", executor)
+    app.state.batch_job_store = BatchJobStore(config.DATA_DIR / "api_batch_jobs")
+    app.state.mobile_export_store = MobileExportStore(config.DATA_DIR / "mobile_exports")
     app.state.document_store = MobileDocumentStore(config.DATA_DIR / "mobile_documents")
     app.state.document_processor = DocumentOCSRProcessor(
         backend=config.OCSR_BACKEND,
@@ -819,7 +1010,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-app = FastAPI(title="Molecule Vision Local API", version="2.3.0", lifespan=lifespan)
+app = FastAPI(title="Molecule Vision Local API", version="2.4.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -835,14 +1026,15 @@ api = APIRouter(
 
 
 @public_api.get("/health")
-def health() -> dict[str, Any]:
-    return {
-        "status": "ok",
-        "appMode": config.APP_MODE,
-        "backend": config.OCSR_BACKEND,
-        "maxUploadBytes": MAX_UPLOAD_BYTES,
-        "apiVersion": "2.3",
-    }
+def health(request: Request) -> dict[str, Any]:
+    detected = run_production_health_check(
+        backend=config.OCSR_BACKEND,
+        production=config.IS_PRODUCTION_MODE,
+        warmup=config.PRODUCTION_HEALTH_WARMUP if config.IS_PRODUCTION_MODE else False,
+        load_model=config.PRODUCTION_HEALTH_LOAD_MODEL if config.IS_PRODUCTION_MODE else False,
+        use_cache=True,
+    )
+    return _mobile_health_status(request, detected)
 
 
 @auth_api.post("/register", status_code=201)
@@ -854,6 +1046,7 @@ def register_user(payload: RegisterRequest, request: Request) -> dict[str, Any]:
             payload.display_name,
             payload.password,
             payload.role,
+            payload.account_type,
         )
     except ValueError as exc:
         detail = str(exc)
@@ -869,6 +1062,9 @@ def login_user(payload: LoginRequest, request: Request) -> dict[str, Any]:
     user = repository.authenticate_password(payload.username, payload.password)
     if user is None:
         raise HTTPException(status_code=401, detail="用户名或密码错误。")
+    if payload.account_type is not None and user.get("account_type") != payload.account_type:
+        label = "开发者" if payload.account_type == "developer" else "普通用户"
+        raise HTTPException(status_code=403, detail=f"该账号不是{label}账号，请切换登录入口。")
     token = repository.create_session(str(user["user_id"]))
     return _auth_response(user, token, request)
 
@@ -889,7 +1085,7 @@ def update_current_user(
         updated = AuthRepository().update_profile(
             str(user["user_id"]),
             payload.display_name,
-            payload.role,
+            payload.role if _is_developer(user) else "",
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -918,8 +1114,9 @@ def change_current_password(
 
 
 @auth_api.get("/members")
-def group_members(request: Request, _user: dict[str, Any] = Depends(require_user)) -> list[dict[str, Any]]:
-    return [_user_dto(user, request) for user in AuthRepository().list_users()]
+def group_members(request: Request) -> list[dict[str, Any]]:
+    """List developer profiles for the dedicated developer login screen."""
+    return [_user_dto(user, request) for user in AuthRepository().list_users("developer")]
 
 
 @auth_api.post("/logout", status_code=204)
@@ -1104,6 +1301,527 @@ def _create_image_job(
     return job
 
 
+def _batch_store(request: Request) -> BatchJobStore:
+    return request.app.state.batch_job_store
+
+
+def _owned_batch_job(request: Request, job_id: str, user: Mapping[str, Any]) -> dict[str, Any]:
+    store = _batch_store(request)
+    try:
+        state = store.read(job_id)
+    except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=404, detail="批量任务不存在。") from exc
+    if str(state.get("owner_user_id") or "") != str(user.get("user_id") or ""):
+        # Do not disclose whether another team member owns this opaque task ID.
+        raise HTTPException(status_code=404, detail="批量任务不存在。")
+    return state
+
+
+def _batch_reports(store: BatchJobStore, state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    job_id = str(state.get("job_id") or "")
+    try:
+        result = load_batch_job_result(job_id, store)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        result = None
+    reports = list((result or {}).get("reports") or [])
+    if reports:
+        return _refresh_batch_report_snapshots(reports)
+    checkpoint_path = store.checkpoint_path(job_id)
+    try:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    reports_by_path = checkpoint.get("reports_by_path") if isinstance(checkpoint, dict) else {}
+    if not isinstance(reports_by_path, dict):
+        return []
+    return _refresh_batch_report_snapshots(reports_by_path.values())
+
+
+def _refresh_batch_report_snapshots(reports: Iterable[Any]) -> list[dict[str, Any]]:
+    """Overlay immutable batch snapshots with the latest independently reviewed reports."""
+    repository = AnalysisRepository()
+    refreshed: list[dict[str, Any]] = []
+    for raw_report in reports:
+        if not isinstance(raw_report, Mapping):
+            continue
+        report = dict(raw_report)
+        analysis_id = str(report.get("analysis_id") or "").strip()
+        if analysis_id:
+            try:
+                latest = repository.load_report(analysis_id)
+            except (OSError, json.JSONDecodeError, ValueError):
+                latest = None
+            if isinstance(latest, Mapping):
+                report = dict(latest)
+        refreshed.append(report)
+    return refreshed
+
+
+def _batch_item_category(row: Mapping[str, Any]) -> str:
+    status = str(row.get("status") or "").lower()
+    if status == "skipped":
+        return "skipped"
+    if status != "success":
+        return "failed"
+    decision = str(row.get("recognition_decision") or "").lower()
+    if decision in {"accepted", "accepted_with_warning", "review_needed", "rejected"}:
+        return decision
+    if row.get("manual_review_recommended"):
+        return "review_needed"
+    return "accepted"
+
+
+def _batch_item_dto(report: dict[str, Any]) -> dict[str, Any]:
+    row = flatten_report(report)
+    ocsr = report.get("ocsr") if isinstance(report.get("ocsr"), Mapping) else {}
+    status = str(report.get("status") or "failed")
+    review = human_review_state(report)
+    confirmed = bool(review.get("confirmed"))
+    category = _batch_item_category(row)
+    return {
+        "analysisId": str(report.get("analysis_id") or ""),
+        "filename": str((report.get("input") or {}).get("filename") or ""),
+        "status": status,
+        "category": category,
+        "message": "识别失败，可重试此图片。" if status == "failed" else str(report.get("message") or ""),
+        "smiles": row.get("final_smiles") or row.get("smiles"),
+        "canonicalSmiles": row.get("canonical_smiles"),
+        "confidence": _number(ocsr, "confidence"),
+        "valid": bool(row.get("valid")),
+        "needsReview": not confirmed and category in {"accepted_with_warning", "review_needed"},
+        "confirmed": confirmed,
+        "reviewStatus": str(review.get("status") or "unconfirmed"),
+    }
+
+
+def _batch_job_dto(store: BatchJobStore, state: Mapping[str, Any]) -> dict[str, Any]:
+    total = max(0, int(state.get("total") or 0))
+    completed = max(0, int(state.get("completed") or 0))
+    summary = state.get("summary") if isinstance(state.get("summary"), Mapping) else {}
+    reports = _batch_reports(store, state)
+    categories = {
+        "accepted": int(state.get("accepted") or summary.get("accepted") or 0),
+        "acceptedWithWarning": int(
+            state.get("accepted_with_warning") or summary.get("accepted_with_warning") or 0
+        ),
+        "reviewNeeded": int(state.get("review_needed") or summary.get("review_needed") or 0),
+        "rejected": int(state.get("rejected") or summary.get("rejected") or 0),
+        "failed": int(state.get("failed") or summary.get("failed") or 0),
+        "skipped": int(state.get("skipped") or summary.get("skipped") or 0),
+    }
+    status = str(state.get("status") or "failed")
+    if reports and status in {"completed", "failed", "cancelled"}:
+        categories = {
+            "accepted": 0,
+            "acceptedWithWarning": 0,
+            "reviewNeeded": 0,
+            "rejected": 0,
+            "failed": 0,
+            "skipped": 0,
+        }
+        for report in reports:
+            item = _batch_item_dto(report)
+            if item["confirmed"]:
+                categories["accepted"] += 1
+            elif item["category"] == "accepted_with_warning":
+                categories["acceptedWithWarning"] += 1
+            elif item["category"] == "review_needed":
+                categories["reviewNeeded"] += 1
+            elif item["category"] == "rejected":
+                categories["rejected"] += 1
+            elif item["category"] == "skipped":
+                categories["skipped"] += 1
+            elif item["category"] == "accepted":
+                categories["accepted"] += 1
+            else:
+                categories["failed"] += 1
+    message = str(state.get("message") or state.get("error") or "")
+    if status == "failed":
+        message = "批量识别失败，请重试失败项或在电脑端查看日志。"
+    if not message:
+        message = {
+            "queued": "批量任务已进入队列。",
+            "running": "正在逐张识别图片。",
+            "paused": "批量任务已暂停。",
+            "cancelling": "正在取消批量任务。",
+            "cancelled": "批量任务已取消。",
+            "completed": "批量识别完成。",
+            "failed": "批量识别失败。",
+        }.get(status, "批量任务状态已更新。")
+    return {
+        "jobId": str(state.get("job_id") or ""),
+        "status": status,
+        "message": message,
+        "backend": str(state.get("backend") or config.OCSR_BACKEND),
+        "source": str(state.get("source") or "upload"),
+        "parentJobId": state.get("parent_job_id"),
+        "total": total,
+        "completed": completed,
+        "progress": round(completed / total, 4) if total else 0.0,
+        "currentFile": state.get("current_file"),
+        "currentIndex": state.get("current_index"),
+        "categoryStats": categories,
+        "results": [_batch_item_dto(report) for report in reports],
+        "createdAt": str(state.get("created_at") or ""),
+        "startedAt": state.get("started_at"),
+        "finishedAt": state.get("finished_at"),
+        "updatedAt": str(state.get("updated_at") or ""),
+    }
+
+
+def _refresh_owned_batch_job(
+    request: Request,
+    job_id: str,
+    user: Mapping[str, Any],
+) -> dict[str, Any]:
+    state = _owned_batch_job(request, job_id, user)
+    if state.get("status") in {"queued", "running", "paused", "cancelling"}:
+        try:
+            state = refresh_batch_job(job_id, _batch_store(request))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="批量任务不存在。") from exc
+    return state
+
+
+def _export_label(export_format: str, content_type: str | None = None) -> str:
+    if export_format == "mol" and content_type == "application/zip":
+        return "MOL 文件包"
+    labels = {
+        "csv": "CSV 结果表",
+        "json": "JSON 数据",
+        "pdf": "PDF 报告",
+        "smi": "SMI 正式结构",
+        "mol": "MOL 正式结构",
+        "sdf": "SDF 正式结构",
+        "zip": "正式结构 ZIP",
+    }
+    return labels.get(export_format, export_format.upper())
+
+
+def _mobile_export_manifest(
+    request: Request,
+    scope: str,
+    resource_id: str,
+    artifacts: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    store: MobileExportStore = request.app.state.mobile_export_store
+    items: list[dict[str, Any]] = []
+    for export_format in EXPORT_FORMATS:
+        artifact = artifacts.get(export_format) or {}
+        available = bool(artifact.get("available"))
+        item: dict[str, Any] = {
+            "format": export_format,
+            "label": _export_label(export_format, str(artifact.get("content_type") or "")),
+            "available": available,
+            "reason": str(artifact.get("reason") or ""),
+            "formalOnly": export_format in FORMAL_ONLY_FORMATS,
+            "fileName": artifact.get("filename"),
+            "contentType": artifact.get("content_type"),
+            "sizeBytes": 0,
+            "downloadUrl": None,
+            "expiresAt": None,
+        }
+        if available:
+            registered = store.register(
+                str(artifact["path"]),
+                str(artifact["filename"]),
+                str(artifact["content_type"]),
+                ttl_seconds=MOBILE_EXPORT_TTL_SECONDS,
+            )
+            export_id = str(registered["export_id"])
+            expires = int(registered["expires_at"])
+            url = request.url_for("media_export", export_id=export_id)
+            item.update({
+                "fileName": str(registered["filename"]),
+                "contentType": str(registered["content_type"]),
+                "sizeBytes": int(registered["size_bytes"]),
+                "downloadUrl": str(url.include_query_params(
+                    expires=str(expires),
+                    token=_expiring_media_token("export", export_id, expires),
+                )),
+                "expiresAt": datetime.fromtimestamp(expires, timezone.utc).isoformat(),
+            })
+        items.append(item)
+    return {
+        "scope": scope,
+        "resourceId": resource_id,
+        "expiresInSeconds": MOBILE_EXPORT_TTL_SECONDS,
+        "items": items,
+    }
+
+
+def _analysis_exports(analysis_id: str, request: Request) -> dict[str, Any]:
+    repository = AnalysisRepository()
+    row = repository.get_analysis(analysis_id)
+    report = repository.load_report(analysis_id)
+    if row is None or report is None:
+        raise HTTPException(status_code=404, detail="分析记录不存在或报告文件不可用。")
+    output_dir = config.DATA_DIR / "mobile_export_work" / "analyses" / analysis_id
+    try:
+        artifacts = build_single_exports(report, output_dir)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="导出文件生成失败，请稍后重试。") from exc
+    return _mobile_export_manifest(request, "analysis", analysis_id, artifacts)
+
+
+def _batch_exports(
+    job_id: str,
+    request: Request,
+    user: Mapping[str, Any],
+) -> dict[str, Any]:
+    state = _refresh_owned_batch_job(request, job_id, user)
+    if state.get("status") not in {"completed", "failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="请等待批量任务结束后再导出。")
+    store = _batch_store(request)
+    result = load_batch_job_result(job_id, store)
+    reports = _batch_reports(store, state)
+    if result is None:
+        result = {
+            "summary": state.get("summary") or {},
+        }
+    else:
+        result = dict(result)
+    # Reviews happen after BatchAnalyzer writes its completion snapshot. Always
+    # export from the latest report so formal structures never use stale state.
+    result["reports"] = reports
+    if not result.get("reports"):
+        raise HTTPException(status_code=409, detail="批量任务还没有可导出的逐项结果。")
+    output_dir = config.DATA_DIR / "mobile_export_work" / "batch_jobs" / job_id
+    try:
+        artifacts = build_batch_exports(result, output_dir)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="批量导出文件生成失败，请稍后重试。") from exc
+    return _mobile_export_manifest(request, "batch", job_id, artifacts)
+
+
+def _export_item(manifest: Mapping[str, Any], export_format: str) -> dict[str, Any]:
+    normalized = export_format.lower()
+    if normalized not in EXPORT_FORMATS:
+        raise HTTPException(status_code=404, detail="不支持的导出格式。")
+    item = next((entry for entry in manifest.get("items") or [] if entry.get("format") == normalized), None)
+    if not isinstance(item, dict):
+        raise HTTPException(status_code=404, detail="导出格式不存在。")
+    if not item.get("available"):
+        raise HTTPException(status_code=409, detail=str(item.get("reason") or "该格式暂不可导出。"))
+    return item
+
+
+def _health_check(health: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    return next(
+        (item for item in (health.get("checks") or []) if isinstance(item, Mapping) and item.get("name") == name),
+        {},
+    )
+
+
+def _health_state_label(state: str) -> str:
+    return {
+        "ready": "真实模型可用",
+        "degraded": "检测到警告",
+        "unavailable": "真实模型不可用",
+        "demo": "演示后端（非真实模型）",
+        "pass": "通过",
+        "fail": "失败",
+        "warn": "警告",
+        "skip": "本次未执行",
+    }.get(state, "尚未检测")
+
+
+def _task_queue_status(request: Request) -> dict[str, Any]:
+    single_jobs: list[dict[str, Any]] = request.app.state.job_store.list_jobs(limit=200)
+    batch_jobs: list[dict[str, Any]] = request.app.state.batch_job_store.list_jobs(limit=200)
+
+    def counts(items: list[Mapping[str, Any]]) -> dict[str, int]:
+        return {
+            status: sum(1 for item in items if str(item.get("status") or "") == status)
+            for status in (
+                "queued", "running", "paused", "pausing", "cancelling",
+                "completed", "failed", "cancelled",
+            )
+        }
+
+    single_counts = counts(single_jobs)
+    batch_counts = counts(batch_jobs)
+    failure_reasons: list[str] = []
+    for item in [*single_jobs, *batch_jobs]:
+        if item.get("status") != "failed":
+            continue
+        reason = str(item.get("error") or item.get("message") or "任务失败。").strip()
+        if reason and reason not in failure_reasons:
+            failure_reasons.append(reason)
+        if len(failure_reasons) >= 5:
+            break
+    queued = single_counts["queued"] + batch_counts["queued"]
+    running = single_counts["running"] + batch_counts["running"]
+    paused = single_counts["paused"] + batch_counts["paused"]
+    pausing = single_counts["pausing"] + batch_counts["pausing"]
+    cancelling = single_counts["cancelling"] + batch_counts["cancelling"]
+    return {
+        "queued": queued,
+        "running": running,
+        "paused": paused,
+        "pausing": pausing,
+        "cancelling": cancelling,
+        "active": queued + running + paused + pausing + cancelling,
+        "failed": single_counts["failed"] + batch_counts["failed"],
+        "single": single_counts,
+        "batch": batch_counts,
+        "recentFailureReasons": failure_reasons,
+    }
+
+
+def _mobile_health_status(request: Request, detected: Mapping[str, Any]) -> dict[str, Any]:
+    backend = str(detected.get("backend") or config.OCSR_BACKEND)
+    backend_status = detected.get("backend_status") if isinstance(detected.get("backend_status"), Mapping) else {}
+    available_check = _health_check(detected, "backend.available")
+    model_file_check = _health_check(detected, "backend.model_file")
+    model_load_check = _health_check(detected, "backend.model_load")
+    device_check = _health_check(detected, "runtime.device")
+    warmup_check = _health_check(detected, "warmup")
+    if backend == "demo":
+        runtime_state = "demo"
+    elif bool(detected.get("ready")) and available_check.get("status") == "pass":
+        runtime_state = "ready"
+    elif available_check.get("status") == "pass":
+        runtime_state = "degraded"
+    else:
+        runtime_state = "unavailable"
+
+    if model_load_check.get("status") == "pass":
+        weight_state = "pass"
+        weight_label = "权重已加载"
+    elif model_file_check.get("status") == "pass":
+        weight_state = "warn" if model_load_check.get("status") == "skip" else str(model_load_check.get("status") or "warn")
+        weight_label = "权重文件已检测，模型尚未加载" if weight_state == "warn" else _health_state_label(weight_state)
+    elif model_file_check.get("status") == "fail" or model_load_check.get("status") == "fail":
+        weight_state = "fail"
+        weight_label = "权重检测失败"
+    else:
+        weight_state = str(model_load_check.get("status") or model_file_check.get("status") or "skip")
+        weight_label = "后端未报告独立权重文件" if weight_state == "skip" else _health_state_label(weight_state)
+
+    failure_reasons = [str(value) for value in (detected.get("failures") or []) if str(value).strip()]
+    return {
+        "status": "ok" if runtime_state in {"ready", "demo"} else "degraded",
+        "appMode": config.APP_MODE,
+        "backend": backend,
+        "maxUploadBytes": MAX_UPLOAD_BYTES,
+        "apiVersion": "2.5",
+        "modelRuntime": {
+            "state": runtime_state,
+            "label": _health_state_label(runtime_state),
+            "modelName": backend_status.get("model_name") or backend_status.get("name") or backend,
+            "modelVersion": backend_status.get("model_version") or backend_status.get("package_version"),
+            "device": backend_status.get("device") or (device_check.get("details") or {}).get("resolved_device"),
+            "message": str(available_check.get("message") or backend_status.get("message") or "未返回后端诊断信息。"),
+            "checkedAt": detected.get("created_at"),
+            "cached": bool(detected.get("cached")),
+            "weights": {
+                "state": weight_state,
+                "label": weight_label,
+                "message": str(model_load_check.get("message") or model_file_check.get("message") or "未返回权重诊断。"),
+                "sha256": detected.get("model_sha256"),
+            },
+            "warmup": {
+                "state": str(warmup_check.get("status") or "skip"),
+                "label": _health_state_label(str(warmup_check.get("status") or "skip")),
+                "message": str(warmup_check.get("message") or "本次健康检查未执行 Warm-up。"),
+                "durationMs": (warmup_check.get("details") or {}).get("total_warmup_time_ms"),
+            },
+            "failureReasons": failure_reasons,
+        },
+        "taskQueue": _task_queue_status(request),
+    }
+
+
+def _feedback_service() -> FeedbackReviewService:
+    return FeedbackReviewService(config.DATA_DIR)
+
+
+def _truthy(value: Any) -> bool:
+    return value is True or str(value).strip().lower() in {"true", "1", "yes"}
+
+
+def _feedback_training_eligibility(item: Mapping[str, Any]) -> dict[str, Any]:
+    reasons: list[str] = []
+    if str(item.get("review_status") or "") != "verified":
+        reasons.append("样本尚未通过独立人工核验。")
+    if not str(item.get("reviewer") or "").strip():
+        reasons.append("缺少审核人记录。")
+    if not _truthy(item.get("include_in_training")):
+        reasons.append("审核结果未标记为可进入训练集。")
+    corrected = str(item.get("corrected_smiles") or "").strip()
+    if not corrected or not validate_smiles(corrected).get("valid"):
+        reasons.append("人工修正 SMILES 缺失或无效。")
+    if not item.get("image_path_abs"):
+        reasons.append("反馈原图不可用。")
+    if _truthy(item.get("duplicate_image")):
+        reasons.append("样本被标记为重复项。")
+    eligible = not reasons
+    return {
+        "eligible": eligible,
+        "label": "已核验，可进入训练 Manifest" if eligible else "不可进入训练集",
+        "reasons": reasons,
+    }
+
+
+def _feedback_image_url(item: Mapping[str, Any], request: Request) -> str | None:
+    if not item.get("image_path_abs"):
+        return None
+    analysis_id = str(item.get("analysis_id") or "")
+    if not analysis_id:
+        return None
+    url = request.url_for("media_feedback_image", analysis_id=analysis_id)
+    return str(url.include_query_params(token=_media_token("feedback-image", analysis_id)))
+
+
+def _feedback_item_dto(item: Mapping[str, Any], request: Request, *, detail: bool = False) -> dict[str, Any]:
+    prediction = item.get("prediction") if isinstance(item.get("prediction"), Mapping) else {}
+    feedback = item.get("feedback") if isinstance(item.get("feedback"), Mapping) else {}
+    original = item.get("original_input") if isinstance(item.get("original_input"), Mapping) else {}
+    dto: dict[str, Any] = {
+        "analysisId": str(item.get("analysis_id") or ""),
+        "savedAt": str(item.get("saved_at") or ""),
+        "reviewStatus": str(item.get("review_status") or "pending"),
+        "predictedSmiles": item.get("predicted_smiles"),
+        "correctedSmiles": item.get("corrected_smiles"),
+        "sourceReference": item.get("source_reference") or "",
+        "sourceLicense": item.get("source_license") or "",
+        "reviewer": item.get("reviewer") or "",
+        "reviewedAt": item.get("reviewed_at") or None,
+        "revision": int(item.get("revision") or 1),
+        "imageUrl": _feedback_image_url(item, request),
+        "filename": original.get("filename") or "",
+        "trainingEligibility": _feedback_training_eligibility(item),
+    }
+    if detail:
+        history: list[dict[str, Any]] = []
+        for event in item.get("history") or []:
+            if not isinstance(event, Mapping):
+                continue
+            history.append({
+                "operation": str(event.get("operation") or event.get("action") or "记录"),
+                "createdAt": event.get("created_at") or event.get("at") or "",
+                "reviewer": event.get("reviewer") or event.get("revised_by") or "",
+                "oldStatus": event.get("old_status") or event.get("previous_review_status") or "",
+                "newStatus": event.get("new_status") or event.get("new_review_status") or "",
+                "notes": event.get("reviewer_notes") or event.get("notes") or event.get("reason") or "",
+            })
+        dto.update({
+            "modelName": prediction.get("model_name") or item.get("model_name"),
+            "modelVersion": prediction.get("model_version") or item.get("model_version"),
+            "backend": prediction.get("backend") or item.get("backend"),
+            "confidence": prediction.get("confidence"),
+            "correctionType": feedback.get("correction_type") or item.get("correction_type") or "other",
+            "feedbackAction": feedback.get("feedback_action") or item.get("feedback_action") or "correction_only",
+            "duplicateImage": _truthy(feedback.get("duplicate_image") or item.get("duplicate_image")),
+            "duplicateOf": feedback.get("duplicate_of") or item.get("duplicate_of") or "",
+            "notes": feedback.get("notes") or item.get("notes") or "",
+            "privacyNotes": feedback.get("privacy_notes") or item.get("privacy_notes") or "",
+            "history": history,
+        })
+    return dto
+
+
 @api.post("/jobs/samples/{sample_id}", status_code=202)
 def create_sample_job(
     sample_id: str,
@@ -1131,11 +1849,159 @@ async def create_image_job(
     return _create_image_job(request, run, "image", str(user["user_id"]))
 
 
+@api.post("/batch-jobs", status_code=202)
+async def create_batch_job(
+    request: Request,
+    files: list[UploadFile] = File(...),
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    limits = batch_input_limits()
+    max_files = int(limits["max_files"])
+    max_file_bytes = int(float(limits["max_file_size_mb"]) * 1024 * 1024)
+    max_total_bytes = int(float(limits["max_total_size_mb"]) * 1024 * 1024)
+    if not files:
+        raise HTTPException(status_code=422, detail="请至少选择一张图片。")
+    if len(files) > max_files:
+        raise HTTPException(status_code=413, detail=f"图片数量不能超过 {max_files} 张。")
+    uploads: list[tuple[str, bytes]] = []
+    total_bytes = 0
+    try:
+        for index, file in enumerate(files, start=1):
+            payload = await file.read(max_file_bytes + 1)
+            if len(payload) > max_file_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"第 {index} 张图片超过 {float(limits['max_file_size_mb']):g} MB 上限。",
+                )
+            total_bytes += len(payload)
+            if total_bytes > max_total_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"图片总大小超过 {float(limits['max_total_size_mb']):g} MB 上限。",
+                )
+            uploads.append((_clean_filename(file.filename, file.content_type), payload))
+    finally:
+        for file in files:
+            await file.close()
+    try:
+        state = start_batch_job_from_uploads(
+            uploads,
+            config.OCSR_BACKEND,
+            store=_batch_store(request),
+            owner_user_id=str(user["user_id"]),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="批量任务暂时无法启动，请检查电脑端存储空间。") from exc
+    return _batch_job_dto(_batch_store(request), state)
+
+
+@api.get("/batch-jobs/{job_id}")
+def get_batch_job(
+    job_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    state = _refresh_owned_batch_job(request, job_id, user)
+    return _batch_job_dto(_batch_store(request), state)
+
+
+@api.post("/batch-jobs/{job_id}/pause")
+def pause_mobile_batch_job(
+    job_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    state = _refresh_owned_batch_job(request, job_id, user)
+    if state.get("status") not in {"queued", "running", "paused"}:
+        raise HTTPException(status_code=409, detail="当前批量任务不能暂停。")
+    state = pause_batch_job(job_id, _batch_store(request))
+    return _batch_job_dto(_batch_store(request), state)
+
+
+@api.post("/batch-jobs/{job_id}/resume")
+def resume_mobile_batch_job(
+    job_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    state = _owned_batch_job(request, job_id, user)
+    if state.get("status") not in {"paused", "failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="当前批量任务不需要继续。")
+    try:
+        state = resume_batch_job(job_id, _batch_store(request))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _batch_job_dto(_batch_store(request), state)
+
+
+@api.post("/batch-jobs/{job_id}/cancel")
+def cancel_mobile_batch_job(
+    job_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    state = _owned_batch_job(request, job_id, user)
+    if state.get("status") in {"completed", "failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="当前批量任务已经结束。")
+    state = cancel_batch_job(job_id, _batch_store(request), force=False)
+    return _batch_job_dto(_batch_store(request), state)
+
+
+@api.post("/batch-jobs/{job_id}/retry-failed", status_code=202)
+def retry_failed_mobile_batch_job(
+    job_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    state = _refresh_owned_batch_job(request, job_id, user)
+    if state.get("status") not in {"completed", "failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="请等待当前批量任务结束后再重试失败项。")
+    result = load_batch_job_result(job_id, _batch_store(request))
+    if result is None:
+        result = {"reports": _batch_reports(_batch_store(request), state)}
+    try:
+        retry = start_batch_retry_job(
+            result,
+            str(state.get("backend") or config.OCSR_BACKEND),
+            "failed",
+            state.get("runtime_config") or {},
+            store=_batch_store(request),
+            parent_job_id=job_id,
+            owner_user_id=str(user["user_id"]),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="失败项重试暂时无法启动。") from exc
+    return _batch_job_dto(_batch_store(request), retry)
+
+
+@api.get("/batch-jobs/{job_id}/exports")
+def get_batch_export_center(
+    job_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    return _batch_exports(job_id, request, user)
+
+
+@api.get("/batch-jobs/{job_id}/exports/{export_format}")
+def get_batch_export_format(
+    job_id: str,
+    export_format: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    return _export_item(_batch_exports(job_id, request, user), export_format)
+
+
 @api.post("/documents", status_code=201)
 async def upload_document(
     request: Request,
     file: UploadFile = File(...),
-    user: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_developer),
 ) -> dict[str, Any]:
     original_name = Path(file.filename or "document").name
     payload = await file.read(MAX_DOCUMENT_BYTES + 1)
@@ -1156,7 +2022,7 @@ async def upload_document(
 def detect_document_regions(
     document_id: str,
     request: Request,
-    _user: dict[str, Any] = Depends(require_user),
+    _user: dict[str, Any] = Depends(require_developer),
 ) -> dict[str, Any]:
     document_store = _mobile_document_store(request)
     manifest = document_store.load(document_id)
@@ -1220,7 +2086,7 @@ def detect_document_regions(
 def get_document(
     document_id: str,
     request: Request,
-    _user: dict[str, Any] = Depends(require_user),
+    _user: dict[str, Any] = Depends(require_developer),
 ) -> dict[str, Any]:
     store = _mobile_document_store(request)
     manifest = store.load(document_id)
@@ -1242,7 +2108,7 @@ def edit_document_region(
     region_id: str,
     payload: DocumentRegionEditRequest,
     request: Request,
-    _user: dict[str, Any] = Depends(require_user),
+    _user: dict[str, Any] = Depends(require_developer),
 ) -> dict[str, Any]:
     if len(payload.bbox) != 4:
         raise HTTPException(status_code=422, detail="区域坐标必须包含 x1、y1、x2、y2。")
@@ -1271,7 +2137,7 @@ def recognize_document_region(
     region_id: str,
     payload: DocumentRegionRecognizeRequest,
     request: Request,
-    user: dict[str, Any] = Depends(require_user),
+    user: dict[str, Any] = Depends(require_developer),
 ) -> dict[str, Any]:
     if not payload.confirmed:
         raise HTTPException(status_code=422, detail="请先人工确认该区域为单个 molecule。")
@@ -1362,12 +2228,49 @@ def recognize_document_region(
     return job
 
 
-@api.get("/jobs/{job_id}")
-def get_job(job_id: str, request: Request) -> dict[str, Any]:
-    store: JobStore = request.app.state.job_store
+def _owned_job(store: JobStore, job_id: str, user: dict[str, Any]) -> dict[str, Any]:
     job = store.load(job_id)
-    if job is None:
+    if job is None or (
+        job.get("ownerUserId") and str(job.get("ownerUserId")) != str(user.get("user_id"))
+    ):
         raise HTTPException(status_code=404, detail="任务不存在。")
+    return job
+
+
+@api.post("/jobs/{job_id}/pause")
+def pause_job(job_id: str, request: Request, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    store: JobStore = request.app.state.job_store
+    _owned_job(store, job_id, user)
+    try:
+        return store.pause(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@api.post("/jobs/{job_id}/resume")
+def resume_job(job_id: str, request: Request, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    store: JobStore = request.app.state.job_store
+    _owned_job(store, job_id, user)
+    try:
+        return store.resume(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@api.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, request: Request, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    store: JobStore = request.app.state.job_store
+    _owned_job(store, job_id, user)
+    try:
+        return store.cancel(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@api.get("/jobs/{job_id}")
+def get_job(job_id: str, request: Request, user: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    store: JobStore = request.app.state.job_store
+    job = _owned_job(store, job_id, user)
     response = dict(job)
     if job.get("status") == "completed" and job.get("analysisId"):
         repository = AnalysisRepository()
@@ -1424,7 +2327,12 @@ def list_analyses(
         raise HTTPException(status_code=400, detail="不支持的历史状态筛选。")
     if scope not in {"all", "mine"}:
         raise HTTPException(status_code=400, detail="scope 仅支持 all 或 mine。")
-    selected_owner_id = str(user["user_id"]) if scope == "mine" else owner_user_id
+    if _is_developer(user):
+        selected_owner_id = str(user["user_id"]) if scope == "mine" else owner_user_id
+    else:
+        if owner_user_id and owner_user_id != str(user["user_id"]):
+            raise HTTPException(status_code=403, detail="普通用户只能查看自己的历史记录。")
+        selected_owner_id = str(user["user_id"])
     repository = AnalysisRepository()
     if status == "review_needed":
         # The repository's legacy filter only looks at recognition_decision.
@@ -1481,31 +2389,191 @@ def list_analyses(
     }
 
 
+@api.get("/feedback")
+def list_feedback_items(
+    request: Request,
+    status: str = Query(default="pending"),
+    query: str = Query(default="", max_length=200),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    _user: dict[str, Any] = Depends(require_developer),
+) -> dict[str, Any]:
+    allowed_statuses = {"all", "pending", "verified", "rejected", "returned", "duplicate", "license_unclear"}
+    if status not in allowed_statuses:
+        raise HTTPException(status_code=422, detail="不支持的反馈审核状态。")
+    service = _feedback_service()
+    all_items = service.list_items(status=status, query=query, limit=10000)
+    page = all_items[offset:offset + limit]
+    status_counts: dict[str, int] = {}
+    for item in service.list_items(status="all", limit=10000):
+        item_status = str(item.get("review_status") or "pending")
+        status_counts[item_status] = status_counts.get(item_status, 0) + 1
+    return {
+        "items": [_feedback_item_dto(item, request) for item in page],
+        "offset": offset,
+        "limit": limit,
+        "total": len(all_items),
+        "hasMore": offset + len(page) < len(all_items),
+        "statusCounts": status_counts,
+    }
+
+
+@api.get("/feedback/manifest")
+def export_feedback_training_manifest(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_developer),
+) -> dict[str, Any]:
+    destination = config.DATA_DIR / "mobile_export_work" / "feedback" / "verified_feedback_manifest.csv"
+    result = _feedback_service().export_verified_manifest(destination, split="train")
+    store: MobileExportStore = request.app.state.mobile_export_store
+    registered = store.register(
+        destination,
+        "verified_feedback_manifest.csv",
+        "text/csv; charset=utf-8",
+        ttl_seconds=MOBILE_EXPORT_TTL_SECONDS,
+    )
+    export_id = str(registered["export_id"])
+    expires = int(registered["expires_at"])
+    url = request.url_for("media_export", export_id=export_id)
+    return {
+        "exportedCount": int(result.get("exported_count") or 0),
+        "skipped": result.get("skipped") or {},
+        "item": {
+            "format": "csv",
+            "label": "已核验训练 Manifest",
+            "available": True,
+            "reason": "",
+            "formalOnly": True,
+            "fileName": str(registered["filename"]),
+            "contentType": str(registered["content_type"]),
+            "sizeBytes": int(registered["size_bytes"]),
+            "downloadUrl": str(url.include_query_params(
+                expires=str(expires),
+                token=_expiring_media_token("export", export_id, expires),
+            )),
+            "expiresAt": datetime.fromtimestamp(expires, timezone.utc).isoformat(),
+        },
+    }
+
+
+@api.get("/feedback/{analysis_id}")
+def get_feedback_item(
+    analysis_id: str,
+    request: Request,
+    _user: dict[str, Any] = Depends(require_developer),
+) -> dict[str, Any]:
+    item = _feedback_service().get_item(analysis_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="反馈样本不存在。")
+    return _feedback_item_dto(item, request, detail=True)
+
+
+@api.patch("/feedback/{analysis_id}/review")
+@api.put("/feedback/{analysis_id}/review")
+def review_feedback_item(
+    analysis_id: str,
+    payload: FeedbackReviewRequest,
+    request: Request,
+    user: dict[str, Any] = Depends(require_developer),
+) -> dict[str, Any]:
+    service = _feedback_service()
+    reviewer = str(user.get("display_name") or user.get("username") or user.get("user_id") or "").strip()
+    try:
+        if payload.action == "approve":
+            service.approve_for_dataset(analysis_id, payload.note, reviewer=reviewer)
+        elif payload.action == "return":
+            service.return_for_revision(analysis_id, payload.note, reviewer=reviewer)
+        elif payload.action == "reject":
+            service.reject_sample(analysis_id, payload.note, reviewer=reviewer)
+        elif payload.action == "duplicate":
+            if not payload.duplicate_of.strip():
+                raise ValueError("标记重复项时必须填写 duplicateOf。")
+            service.mark_duplicate(
+                analysis_id,
+                duplicate_of=payload.duplicate_of.strip(),
+                reviewer_notes=payload.note,
+                reviewer=reviewer,
+            )
+        else:
+            service.mark_license_unclear(analysis_id, reviewer_notes=payload.note, reviewer=reviewer)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="反馈样本不存在或标注文件不可用。") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    updated = service.get_item(analysis_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="反馈样本不存在。")
+    return _feedback_item_dto(updated, request, detail=True)
+
+
 @api.get("/analyses/{analysis_id}")
-def get_analysis(analysis_id: str, request: Request) -> dict[str, Any]:
+def get_analysis(
+    analysis_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
     repository = AnalysisRepository()
     row = repository.get_analysis(analysis_id)
     report = repository.load_report(analysis_id)
     if row is None or report is None:
         raise HTTPException(status_code=404, detail="分析记录不存在或报告文件不可用。")
+    _ensure_analysis_access(row, user)
     return _mobile_result(report, request, row)
+
+
+@api.get("/analyses/{analysis_id}/exports")
+def get_analysis_export_center(
+    analysis_id: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    row = AnalysisRepository().get_analysis(analysis_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="分析记录不存在。")
+    _ensure_analysis_access(row, user)
+    return _analysis_exports(analysis_id, request)
+
+
+@api.get("/analyses/{analysis_id}/exports/{export_format}")
+def get_analysis_export_format(
+    analysis_id: str,
+    export_format: str,
+    request: Request,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    row = AnalysisRepository().get_analysis(analysis_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="分析记录不存在。")
+    _ensure_analysis_access(row, user)
+    return _export_item(_analysis_exports(analysis_id, request), export_format)
 
 
 @api.patch("/analyses/{analysis_id}/favorite")
 @api.put("/analyses/{analysis_id}/favorite")
-def update_favorite(analysis_id: str, payload: FavoriteRequest) -> dict[str, Any]:
+def update_favorite(
+    analysis_id: str,
+    payload: FavoriteRequest,
+    user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
     repository = AnalysisRepository()
-    if repository.get_analysis(analysis_id) is None:
+    row = repository.get_analysis(analysis_id)
+    if row is None:
         raise HTTPException(status_code=404, detail="分析记录不存在。")
+    _ensure_analysis_access(row, user)
     repository.set_favorite(analysis_id, payload.favorite)
     return {"analysisId": analysis_id, "isFavorite": payload.favorite}
 
 
 @api.delete("/analyses/{analysis_id}", status_code=204)
-def delete_analysis_index(analysis_id: str) -> Response:
+def delete_analysis_index(
+    analysis_id: str,
+    user: dict[str, Any] = Depends(require_user),
+) -> Response:
     repository = AnalysisRepository()
-    if repository.get_analysis(analysis_id) is None:
+    row = repository.get_analysis(analysis_id)
+    if row is None:
         raise HTTPException(status_code=404, detail="分析记录不存在。")
+    _ensure_analysis_access(row, user)
     repository.delete_analysis(analysis_id)
     return Response(status_code=204)
 
@@ -1522,6 +2590,7 @@ def review_analysis(
     report = repository.load_report(analysis_id)
     if row is None or report is None:
         raise HTTPException(status_code=404, detail="分析记录不存在或报告文件不可用。")
+    _ensure_analysis_access(row, user)
     if (report.get("input") or {}).get("type") != "image":
         raise HTTPException(status_code=409, detail="手动 SMILES 结果不需要图片结构复核。")
 
@@ -1567,7 +2636,16 @@ def review_analysis(
         report_path_text = str(row.get("report_path") or "").strip()
         if not report_path_text:
             raise HTTPException(status_code=500, detail="无法定位报告文件。")
-        report_path = Path(report_path_text).expanduser().resolve()
+        indexed_path = Path(report_path_text).expanduser().resolve()
+        # Legacy batch rows may still point at the shared batch container.
+        # Never replace that container with one reviewed report.
+        if indexed_path.name == "batch_ui_result.json":
+            report_path = (
+                indexed_path.parent / "batch_ui_result_reports" / f"{analysis_id}.json"
+            ).resolve()
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            report_path = indexed_path
         report_path.write_text(json.dumps(updated, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     record_report(updated, report_path)
     refreshed = AnalysisRepository().get_analysis(analysis_id)
@@ -1624,7 +2702,8 @@ def _analysis_structure_file(analysis_id: str) -> Path:
         structure_value = (report.get("images") or {}).get("redrawn_molecule")
         structure_path = Path(str(structure_value)).expanduser().resolve()
         report_root = Path(str(row.get("report_path") or "")).expanduser().resolve().parent
-        structure_path.relative_to(report_root)
+        if not _managed_analysis_media_path(structure_path, report_root):
+            raise ValueError("structure path is outside managed roots")
     except (OSError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=404, detail="结构图不存在。") from exc
     if not structure_path.is_file():
@@ -1644,7 +2723,8 @@ def _analysis_input_file(analysis_id: str) -> Path:
         input_value = (report.get("input") or {}).get("path")
         input_path = Path(str(input_value)).expanduser().resolve()
         report_root = Path(str(row.get("report_path") or "")).expanduser().resolve().parent
-        input_path.relative_to(report_root)
+        if not _managed_analysis_media_path(input_path, report_root):
+            raise ValueError("input path is outside managed roots")
     except (OSError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=404, detail="原始图片不存在。") from exc
     if not input_path.is_file() or input_path.suffix.lower() not in config.SUPPORTED_IMAGE_EXTENSIONS:
@@ -1698,6 +2778,50 @@ def media_user_avatar(user_id: str, token: str = Query(default="")) -> FileRespo
     if not path.is_file():
         raise HTTPException(status_code=404, detail="头像不存在。")
     return FileResponse(path, media_type="image/png", filename=f"{user_id}.png")
+
+
+@app.get("/media/v1/exports/{export_id}", name="media_export")
+def media_export(
+    export_id: str,
+    request: Request,
+    expires: int = Query(...),
+    token: str = Query(default=""),
+) -> FileResponse:
+    _check_expiring_media_token("export", export_id, expires, token)
+    store: MobileExportStore = request.app.state.mobile_export_store
+    metadata = store.load(export_id)
+    if metadata is None:
+        raise HTTPException(status_code=404, detail="导出文件不存在。")
+    if int(metadata.get("expires_at") or 0) != expires:
+        raise HTTPException(status_code=401, detail="下载令牌与导出文件不匹配。")
+    if expires < int(time.time()):
+        raise HTTPException(status_code=410, detail="下载链接已过期，请返回导出中心刷新。")
+    return FileResponse(
+        str(metadata["path"]),
+        media_type=str(metadata["content_type"]),
+        filename=str(metadata["filename"]),
+    )
+
+
+@app.get("/media/v1/feedback/{analysis_id}/image", name="media_feedback_image")
+def media_feedback_image(
+    analysis_id: str,
+    token: str = Query(default=""),
+) -> FileResponse:
+    _check_media_token("feedback-image", analysis_id, token)
+    service = _feedback_service()
+    item = service.get_item(analysis_id)
+    if item is None or not item.get("image_path_abs"):
+        raise HTTPException(status_code=404, detail="反馈原图不存在。")
+    path = Path(str(item["image_path_abs"])).expanduser().resolve()
+    try:
+        path.relative_to((service.root / "images").resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="反馈原图路径无效。") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="反馈原图不存在。")
+    media_type = "image/png" if path.suffix.lower() == ".png" else "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=f"feedback_{safe_stem(analysis_id, 'sample')}.png")
 
 
 @app.get(

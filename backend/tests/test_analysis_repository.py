@@ -250,6 +250,8 @@ def test_repository_loads_report_from_single_and_batch_payload(tmp_path: Path) -
 def test_repository_records_corrections_jobs_and_result_payloads(tmp_path: Path, monkeypatch) -> None:
     db_path = tmp_path / "app.db"
     repository = AnalysisRepository(db_path)
+    from src.storage.auth_repository import AuthRepository
+    owner = AuthRepository(db_path).register("mobile-user", "Mobile User", "safe-password-123")
     report = _report(tmp_path, "CCO", "ethanol001", "ethanol.png")
     repository.save_analysis(report, tmp_path / "report.json")
 
@@ -275,8 +277,15 @@ def test_repository_records_corrections_jobs_and_result_payloads(tmp_path: Path,
     import src.storage.analysis_repository as module
 
     monkeypatch.setattr(module, "AnalysisRepository", lambda: AnalysisRepository(db_path))
-    assert record_result_payload({"reports": [batch_report]}, payload_path) == 1
-    assert repository.get_analysis("amine001") is not None
+    assert record_result_payload({"reports": [batch_report]}, payload_path, owner_user_id=owner["user_id"]) == 1
+    indexed = repository.get_analysis("amine001")
+    assert indexed["owner_user_id"] == owner["user_id"]
+    snapshot_path = Path(indexed["report_path"])
+    assert snapshot_path != payload_path
+    assert snapshot_path.parent.name == "payload_reports"
+    assert snapshot_path.name == "amine001.json"
+    assert json.loads(snapshot_path.read_text(encoding="utf-8"))["analysis_id"] == "amine001"
+    assert json.loads(payload_path.read_text(encoding="utf-8"))["reports"][0]["analysis_id"] == "amine001"
 
 
 def test_production_history_excludes_demo_reports(tmp_path: Path, monkeypatch) -> None:

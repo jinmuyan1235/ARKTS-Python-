@@ -66,10 +66,13 @@ export struct PageHeader {
           .fontSize($r('app.float.title_font_size'))
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.text_primary'))
-        Text(this.subtitle)
-          .fontSize($r('app.float.caption_font_size'))
-          .fontColor($r('app.color.text_secondary'))
-          .maxLines(2)
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (this.subtitle.length > 0) {
+          Text(this.subtitle)
+            .fontSize($r('app.float.caption_font_size'))
+            .fontColor($r('app.color.text_secondary'))
+            .maxLines(2)
+        }
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)

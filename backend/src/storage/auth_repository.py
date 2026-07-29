@@ -27,11 +27,21 @@ class AuthRepository:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = Path(db_path).expanduser().resolve() if db_path is not None else None
 
-    def register(self, username: str, display_name: str, password: str, role: str = "") -> dict[str, Any]:
+    def register(
+        self,
+        username: str,
+        display_name: str,
+        password: str,
+        role: str = "",
+        account_type: str = "developer",
+    ) -> dict[str, Any]:
         normalized_username = username.strip()
         normalized_name = display_name.strip()
-        normalized_role = role.strip()
-        _validate_registration(normalized_username, normalized_name, password, normalized_role)
+        normalized_account_type = account_type.strip().lower()
+        normalized_role = role.strip() if normalized_account_type == "developer" else ""
+        _validate_registration(
+            normalized_username, normalized_name, password, normalized_role, normalized_account_type
+        )
         salt = secrets.token_bytes(16)
         now = utc_now()
         user = {
@@ -39,6 +49,7 @@ class AuthRepository:
             "username": normalized_username,
             "display_name": normalized_name,
             "role": normalized_role,
+            "account_type": normalized_account_type,
             "password_hash": _password_hash(password, salt, PASSWORD_ITERATIONS),
             "password_salt": base64.b64encode(salt).decode("ascii"),
             "password_iterations": PASSWORD_ITERATIONS,
@@ -56,11 +67,11 @@ class AuthRepository:
             connection.execute(
                 """
                 INSERT INTO users (
-                    user_id, username, display_name, role, password_hash, password_salt,
+                    user_id, username, display_name, role, account_type, password_hash, password_salt,
                     password_iterations, avatar_path, created_at, updated_at
                 )
                 VALUES (
-                    :user_id, :username, :display_name, :role, :password_hash, :password_salt,
+                    :user_id, :username, :display_name, :role, :account_type, :password_hash, :password_salt,
                     :password_iterations, :avatar_path, :created_at, :updated_at
                 )
                 """,
@@ -146,15 +157,26 @@ class AuthRepository:
             connection.execute("DELETE FROM user_sessions WHERE token_hash = ?", (_token_hash(raw_token),))
             connection.commit()
 
-    def list_users(self) -> list[dict[str, Any]]:
+    def list_users(self, account_type: str | None = None) -> list[dict[str, Any]]:
         with closing(connect(self.db_path)) as connection:
-            rows = connection.execute(
-                """
-                SELECT user_id, username, display_name, role, avatar_path, created_at, updated_at
-                FROM users
-                ORDER BY created_at ASC
-                """
-            ).fetchall()
+            if account_type is None:
+                rows = connection.execute(
+                    """
+                    SELECT user_id, username, display_name, role, account_type, avatar_path, created_at, updated_at
+                    FROM users
+                    ORDER BY created_at ASC
+                    """
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT user_id, username, display_name, role, account_type, avatar_path, created_at, updated_at
+                    FROM users
+                    WHERE account_type = ?
+                    ORDER BY created_at ASC
+                    """,
+                    (account_type,),
+                ).fetchall()
         return [public_user(dict(row)) for row in rows]
 
     def get_user(self, user_id: str) -> dict[str, Any] | None:
@@ -239,13 +261,16 @@ def public_user(user: dict[str, Any]) -> dict[str, Any]:
         "username": str(user.get("username") or ""),
         "display_name": str(user.get("display_name") or ""),
         "role": str(user.get("role") or ""),
+        "account_type": str(user.get("account_type") or "developer"),
         "avatar_path": str(user.get("avatar_path") or ""),
         "created_at": str(user.get("created_at") or ""),
         "updated_at": str(user.get("updated_at") or ""),
     }
 
 
-def _validate_registration(username: str, display_name: str, password: str, role: str) -> None:
+def _validate_registration(
+    username: str, display_name: str, password: str, role: str, account_type: str = "developer"
+) -> None:
     if not USERNAME_PATTERN.fullmatch(username):
         raise ValueError("用户名需为 3–32 位，只能包含字母、数字、点、横线或下划线。")
     if not 1 <= len(display_name) <= 40:
@@ -254,6 +279,8 @@ def _validate_registration(username: str, display_name: str, password: str, role
         raise ValueError("密码长度需为 8–128 个字符。")
     if len(role) > 40:
         raise ValueError("组内角色不能超过 40 个字符。")
+    if account_type not in {"user", "developer"}:
+        raise ValueError("账户类型仅支持 user 或 developer。")
 
 
 def _password_hash(password: str, salt: bytes, iterations: int) -> str:

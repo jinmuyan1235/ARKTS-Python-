@@ -8,7 +8,13 @@ export interface StoredSettings {
   apiBaseUrl: string
   apiKey: string
   activeJobIds: string[]
+  activeBatchJobId: string
   authToken: string
+  lastUsername: string
+  lastAccountType: string
+  rememberPassword: boolean
+  autoLogin: boolean
+  rememberedUsernames: string[]
 }
 
 export function normalizeStoredJobIds(jobIds: string[], legacyJobId: string = ''): string[] {
@@ -30,7 +36,13 @@ export class SettingsStore {
   private static readonly ACTIVE_JOB_IDS_KEY: string = 'active_job_ids'
   // Kept only for one-time migration from the previous single-task version.
   private static readonly ACTIVE_JOB_KEY: string = 'active_job_id'
+  private static readonly ACTIVE_BATCH_JOB_KEY: string = 'active_batch_job_id'
   private static readonly AUTH_TOKEN_KEY: string = 'auth_token'
+  private static readonly LAST_USERNAME_KEY: string = 'last_username'
+  private static readonly LAST_ACCOUNT_TYPE_KEY: string = 'last_account_type'
+  private static readonly REMEMBER_PASSWORD_KEY: string = 'remember_password'
+  private static readonly AUTO_LOGIN_KEY: string = 'auto_login'
+  private static readonly REMEMBERED_USERNAMES_KEY: string = 'remembered_usernames'
 
   static async load(context: Context): Promise<StoredSettings> {
     const store = await preferences.getPreferences(context, SettingsStore.STORE_NAME)
@@ -65,7 +77,15 @@ export class SettingsStore {
       apiBaseUrl: await store.get(SettingsStore.BASE_URL_KEY, DEFAULT_API_BASE_URL) as string,
       apiKey: apiKey,
       activeJobIds: activeJobIds,
-      authToken: authToken
+      activeBatchJobId: await store.get(SettingsStore.ACTIVE_BATCH_JOB_KEY, '') as string,
+      authToken: authToken,
+      lastUsername: await store.get(SettingsStore.LAST_USERNAME_KEY, '') as string,
+      lastAccountType: await store.get(SettingsStore.LAST_ACCOUNT_TYPE_KEY, 'developer') as string,
+      rememberPassword: await store.get(SettingsStore.REMEMBER_PASSWORD_KEY, false) as boolean,
+      autoLogin: await store.get(SettingsStore.AUTO_LOGIN_KEY, false) as boolean,
+      rememberedUsernames: SettingsStore.parseStringList(
+        await store.get(SettingsStore.REMEMBERED_USERNAMES_KEY, '[]') as string
+      )
     }
   }
 
@@ -85,6 +105,46 @@ export class SettingsStore {
 
   static async saveAuthToken(context: Context, token: string): Promise<void> {
     await SecureStore.saveAuthToken(token)
+  }
+
+  static async saveActiveBatchJob(context: Context, jobId: string): Promise<void> {
+    const store = await preferences.getPreferences(context, SettingsStore.STORE_NAME)
+    await store.put(SettingsStore.ACTIVE_BATCH_JOB_KEY, jobId.trim())
+    await store.flush()
+  }
+
+  static async saveLoginPreferences(
+    context: Context,
+    lastUsername: string,
+    lastAccountType: string,
+    rememberPassword: boolean,
+    autoLogin: boolean,
+    rememberedUsernames: string[]
+  ): Promise<void> {
+    const store = await preferences.getPreferences(context, SettingsStore.STORE_NAME)
+    await store.put(SettingsStore.LAST_USERNAME_KEY, lastUsername.trim())
+    await store.put(SettingsStore.LAST_ACCOUNT_TYPE_KEY,
+      lastAccountType === 'developer' ? 'developer' : 'user')
+    await store.put(SettingsStore.REMEMBER_PASSWORD_KEY, rememberPassword)
+    await store.put(SettingsStore.AUTO_LOGIN_KEY, rememberPassword && autoLogin)
+    await store.put(SettingsStore.REMEMBERED_USERNAMES_KEY, JSON.stringify(rememberedUsernames))
+    await store.flush()
+  }
+
+  private static parseStringList(serialized: string): string[] {
+    try {
+      const parsed: Object = JSON.parse(serialized) as Object
+      if (!Array.isArray(parsed)) return []
+      const result: string[] = []
+      const items: string[] = parsed as string[]
+      items.forEach((value: string) => {
+        const clean: string = value.trim()
+        if (clean.length > 0 && result.indexOf(clean) < 0) result.push(clean)
+      })
+      return result
+    } catch (_) {
+      return []
+    }
   }
 
   private static parseJobIds(serialized: string, legacyJobId: string): string[] {

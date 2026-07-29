@@ -9,7 +9,7 @@ from typing import Callable
 import config
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 Migration = Callable[[sqlite3.Connection], None]
 
 
@@ -173,6 +173,41 @@ def _migrate_v5(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE INDEX IF NOT EXISTS idx_analyses_owner_user_id ON analyses(owner_user_id)")
 
 
+def _migrate_v6(connection: sqlite3.Connection) -> None:
+    """Normalize legacy local team roles to the five mobile task categories."""
+    connection.execute(
+        """
+        UPDATE users
+        SET role = CASE
+            WHEN username = 'jinmu' COLLATE NOCASE THEN '架构统筹'
+            WHEN username = 'liuke' COLLATE NOCASE THEN '前端测试'
+            WHEN role IN ('组长', '架构', '统筹') THEN '架构统筹'
+            WHEN role IN ('图像', '文档', '图像文档') THEN '图像文档'
+            WHEN role IN ('算法', '算法组', '后端', '模型') THEN '模型后端'
+            WHEN role IN ('化学', '化学组', '数据') THEN '化学数据'
+            WHEN role IN ('前端', '测试') THEN '前端测试'
+            ELSE role
+        END
+        WHERE username IN ('jinmu', 'liuke') COLLATE NOCASE
+           OR role IN ('组长', '架构', '统筹', '图像', '文档', '算法', '算法组',
+                       '后端', '模型', '化学', '化学组', '数据', '前端', '测试')
+        """
+    )
+
+
+def _migrate_v7(connection: sqlite3.Connection) -> None:
+    """Separate product users from developer/team accounts."""
+    columns = _column_names(connection, "users")
+    if "account_type" not in columns:
+        connection.execute(
+            "ALTER TABLE users ADD COLUMN account_type TEXT NOT NULL DEFAULT 'developer'"
+        )
+    connection.execute(
+        "UPDATE users SET account_type = 'developer' WHERE account_type NOT IN ('user', 'developer')"
+    )
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_users_account_type ON users(account_type)")
+
+
 def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
 
@@ -183,4 +218,6 @@ MIGRATIONS: dict[int, Migration] = {
     3: _migrate_v3,
     4: _migrate_v4,
     5: _migrate_v5,
+    6: _migrate_v6,
+    7: _migrate_v7,
 }

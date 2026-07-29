@@ -66,14 +66,14 @@ export function validateRegistrationForm(
 }
 
 export function isTerminalJobStatus(status: string): boolean {
-  return status === 'completed' || status === 'failed'
+  return status === 'completed' || status === 'failed' || status === 'cancelled'
 }
 
 export function taskUiState(status: string): TaskUiState {
   return {
     terminal: isTerminalJobStatus(status),
     success: status === 'completed',
-    keepPolling: status === 'queued' || status === 'running'
+    keepPolling: status === 'queued' || status === 'running' || status === 'pausing' || status === 'cancelling'
   }
 }
 
@@ -103,6 +103,12 @@ export function resolveHistoryOwner(
 
 export function friendlyHttpError(status: number, detail: string, action: string): string {
   if (status === 401) {
+    if (action.indexOf('登录') >= 0 && (detail.indexOf('密码') >= 0 || detail.indexOf('用户名') >= 0)) {
+      return '用户名或密码不正确，请重新输入。'
+    }
+    if (detail.indexOf('API') >= 0 || detail.indexOf('密钥') >= 0) {
+      return '电脑端 API 密钥不正确，请检查服务配置。'
+    }
     return '登录已失效，或 API 密钥不正确，请重新登录并检查设置。'
   }
   if (status === 403) {

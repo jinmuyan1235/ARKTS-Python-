@@ -64,6 +64,7 @@ class BatchJobStore:
         parent_job_id: str | None = None,
         retry_mode: str | None = None,
         input_summary: dict[str, Any] | None = None,
+        owner_user_id: str | None = None,
     ) -> dict[str, Any]:
         directory = ensure_directory(self.job_dir(job_id))
         state = {
@@ -93,6 +94,7 @@ class BatchJobStore:
             "runtime_config": runtime_config or {},
             "parent_job_id": parent_job_id,
             "retry_mode": retry_mode,
+            "owner_user_id": owner_user_id,
             "input_summary": input_summary or {},
             "checkpoint_path": str(self.checkpoint_path(job_id)),
             "max_concurrency": 1,

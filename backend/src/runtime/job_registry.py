@@ -31,6 +31,7 @@ def start_batch_job(
     source: str = "folder",
     parent_job_id: str | None = None,
     retry_mode: str | None = None,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
     """Start a background batch job and return its persisted state."""
     active_store = store or BatchJobStore()
@@ -47,6 +48,7 @@ def start_batch_job(
         parent_job_id=parent_job_id,
         retry_mode=retry_mode,
         input_summary=input_summary,
+        owner_user_id=owner_user_id,
     )
 
 
@@ -56,6 +58,7 @@ def start_batch_job_from_uploads(
     runtime_config: Mapping[str, Any] | None = None,
     *,
     store: BatchJobStore | None = None,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
     """Persist uploaded files and start a background batch job."""
     active_store = store or BatchJobStore()
@@ -74,6 +77,7 @@ def start_batch_job_from_uploads(
         active_store,
         source="upload",
         input_summary=input_summary,
+        owner_user_id=owner_user_id,
     )
 
 
@@ -86,6 +90,7 @@ def start_batch_retry_job(
     store: BatchJobStore | None = None,
     parent_job_id: str | None = None,
     analysis_ids: Iterable[str] | None = None,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
     """Start a retry job from failed or review-needed reports in an existing result."""
     active_store = store or BatchJobStore()
@@ -107,6 +112,7 @@ def start_batch_retry_job(
         source="retry",
         parent_job_id=parent_job_id,
         retry_mode=mode,
+        owner_user_id=owner_user_id,
     )
 
 
@@ -179,6 +185,7 @@ def resume_batch_job(job_id: str, store: BatchJobStore | None = None) -> dict[st
             str(state.get("backend") or config.OCSR_BACKEND),
             state.get("runtime_config") or {},
             active_store,
+            owner_user_id=str(state.get("owner_user_id") or "") or None,
         )
     active_store.update(job_id, status="queued", error="", message="正在从持久化检查点继续……", finished_at=None)
     process = start_logged_process(
@@ -216,6 +223,7 @@ def _start_prepared_batch_job(
     parent_job_id: str | None = None,
     retry_mode: str | None = None,
     input_summary: dict[str, Any] | None = None,
+    owner_user_id: str | None = None,
 ) -> dict[str, Any]:
     output_dir = ensure_directory(store.job_dir(job_id) / "outputs")
     check_batch_disk_space(output_dir, int((input_summary or {}).get("total_bytes") or 0))
@@ -228,6 +236,7 @@ def _start_prepared_batch_job(
         runtime_config,
         store,
         use_cache=source != "retry",
+        owner_user_id=owner_user_id,
     )
     store.create(
         job_id,
@@ -241,6 +250,7 @@ def _start_prepared_batch_job(
         parent_job_id=parent_job_id,
         retry_mode=retry_mode,
         input_summary=input_summary or inspect_batch_folder(input_dir),
+        owner_user_id=owner_user_id,
     )
     process = start_logged_process(
         command,
@@ -260,6 +270,7 @@ def _batch_command(
     runtime_config: Mapping[str, Any],
     store: BatchJobStore,
     use_cache: bool = True,
+    owner_user_id: str | None = None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -287,6 +298,8 @@ def _batch_command(
         command.extend(["--visible-gpu-index", str(runtime_config["visible_gpu_index"])])
     if not use_cache:
         command.append("--no-cache")
+    if owner_user_id:
+        command.extend(["--owner-user-id", owner_user_id])
     return command
 
 
@@ -313,7 +326,7 @@ def _retry_source_paths(
             continue
         if mode == "selected" and str(report.get("analysis_id") or "") not in requested:
             continue
-        if mode == "failed" and report.get("status") == "success":
+        if mode == "failed" and report.get("status") in {"success", "skipped"}:
             continue
         if mode == "review" and not _needs_review(report):
             continue

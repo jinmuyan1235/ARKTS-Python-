@@ -5,6 +5,7 @@ import { formatReportTime } from '../services/UiPresentation'
 
 @Component
 export struct HistoryView {
+  @Prop isDeveloper: boolean = false
   @Prop currentUser: UserProfile | undefined = undefined
   @Prop members: UserProfile[] = []
   @Prop items: HistoryItem[] = []
@@ -32,7 +33,7 @@ export struct HistoryView {
 
   private hasActiveFilters(): boolean {
     return this.query.trim().length > 0 || this.status !== 'all' || this.favoritesOnly ||
-      this.scope !== 'all' || this.ownerUserId.length > 0
+      (this.isDeveloper && (this.scope !== 'all' || this.ownerUserId.length > 0))
   }
 
   private reviewLabel(item: HistoryItem): string {
@@ -59,6 +60,47 @@ export struct HistoryView {
     return item.decision === 'rejected' ? 'warning' : 'success'
   }
 
+  private pillForeground(tone: string): ResourceColor {
+    if (tone === 'success') return $r('app.color.success')
+    if (tone === 'warning') return $r('app.color.warning')
+    if (tone === 'danger') return $r('app.color.danger')
+    if (tone === 'primary') return $r('app.color.primary')
+    return $r('app.color.text_secondary')
+  }
+
+  private pillBackground(tone: string): ResourceColor {
+    if (tone === 'success') return $r('app.color.success_soft')
+    if (tone === 'warning') return $r('app.color.warning_soft')
+    if (tone === 'danger') return $r('app.color.danger_soft')
+    if (tone === 'primary') return $r('app.color.primary_soft')
+    return $r('app.color.surface_muted')
+  }
+
+  @Builder
+  private historyPill(symbol: string, label: string, tone: string, width: number) {
+    Row({ space: 4 }) {
+      Text(symbol)
+        .width(13)
+        .fontSize(11)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.pillForeground(tone))
+        .textAlign(TextAlign.Center)
+      Text(label)
+        .fontSize(11)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.pillForeground(tone))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .width(width)
+    .height(28)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(VerticalAlign.Center)
+    .backgroundColor(this.pillBackground(tone))
+    .borderRadius(14)
+    .accessibilityText(label)
+  }
+
   @Builder
   private scopeChip(label: string, scope: string, ownerUserId: string) {
     Button(label)
@@ -66,14 +108,14 @@ export struct HistoryView {
       .fontWeight(this.scope === scope && this.ownerUserId === ownerUserId ? FontWeight.Medium : FontWeight.Regular)
       .fontColor(this.scope === scope && this.ownerUserId === ownerUserId ?
         $r('app.color.text_on_primary') : $r('app.color.text_body'))
-      .height(44)
-      .padding({ left: 14, right: 14 })
+      .height(36)
+      .padding({ left: 12, right: 12 })
       .backgroundColor(this.scope === scope && this.ownerUserId === ownerUserId ?
         $r('app.color.primary') : $r('app.color.surface_muted'))
       .border({ width: 1, color: this.scope === scope && this.ownerUserId === ownerUserId ?
         $r('app.color.primary') : $r('app.color.border') })
-      .borderRadius(22)
-      .margin({ right: 8, bottom: 8 })
+      .borderRadius(18)
+      .margin({ right: 6 })
       .stateEffect(true)
       .onClick(() => this.onFiltersChanged(scope, ownerUserId, this.status, this.favoritesOnly))
       .accessibilityText(`${this.scope === scope && this.ownerUserId === ownerUserId ? '已选择' : '选择'}${label}`)
@@ -85,12 +127,12 @@ export struct HistoryView {
       .fontSize(13)
       .fontWeight(this.status === status ? FontWeight.Medium : FontWeight.Regular)
       .fontColor(this.status === status ? $r('app.color.text_on_primary') : $r('app.color.text_body'))
-      .height(44)
-      .padding({ left: 14, right: 14 })
+      .height(36)
+      .padding({ left: 12, right: 12 })
       .backgroundColor(this.status === status ? $r('app.color.primary') : $r('app.color.surface_muted'))
       .border({ width: 1, color: this.status === status ? $r('app.color.primary') : $r('app.color.border') })
-      .borderRadius(22)
-      .margin({ right: 8, bottom: 8 })
+      .borderRadius(18)
+      .margin({ right: 6 })
       .stateEffect(true)
       .onClick(() => this.onFiltersChanged(this.scope, this.ownerUserId, status, this.favoritesOnly))
       .accessibilityText(`${this.status === status ? '已选择' : '选择'}${label}`)
@@ -100,13 +142,13 @@ export struct HistoryView {
   private historyCard(item: HistoryItem) {
     Column({ space: 9 }) {
       Row() {
-        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap }) {
-          StatusPill({ symbol: item.inputType === 'image' ? '▧' : '⌬',
-            label: item.inputType === 'image' ? '图片' : 'SMILES', tone: 'primary' })
-          StatusPill({ symbol: item.status === 'success' && item.decision !== 'rejected' ? '✓' : '!',
-            label: this.analysisLabel(item), tone: this.analysisTone(item) })
-          StatusPill({ symbol: item.confirmed ? '✓' : (item.needsReview ? '!' : '·'),
-            label: this.reviewLabel(item), tone: this.reviewTone(item) })
+        Row({ space: 6 }) {
+          this.historyPill(item.inputType === 'image' ? '▧' : '⌬',
+            item.inputType === 'image' ? '图片' : 'SMILES', 'primary', 64)
+          this.historyPill(item.status === 'success' && item.decision !== 'rejected' ? '✓' : '!',
+            this.analysisLabel(item), this.analysisTone(item), 74)
+          this.historyPill(item.confirmed ? '✓' : (item.needsReview ? '!' : '·'),
+            this.reviewLabel(item), this.reviewTone(item), 94)
         }
         .layoutWeight(1)
         Text(item.isFavorite ? '★' : '☆')
@@ -117,23 +159,20 @@ export struct HistoryView {
       }
       .width('100%').alignItems(VerticalAlign.Top)
       if (item.filename.length > 0) {
-        Text(item.filename).fontSize(12).fontColor($r('app.color.text_secondary')).maxLines(1).width('100%')
+        Text(item.filename).fontSize(12).fontColor($r('app.color.text_secondary')).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
       }
       Text(item.smiles.length > 0 ? item.smiles : '无有效 SMILES')
         .fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
         .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-      Row({ space: 7 }) {
-        Text(item.createdBy === null ? '历史数据' : item.createdBy.displayName)
+      Row({ space: 8 }) {
+        Text(item.createdBy === null ? '历史数据' :
+          (item.createdBy.role.length > 0 ? `${item.createdBy.displayName} · ${item.createdBy.role}` : item.createdBy.displayName))
           .fontSize(12).fontColor(item.createdBy === null ? $r('app.color.text_tertiary') : $r('app.color.primary'))
-        if (item.createdBy !== null && item.createdBy.role.length > 0) {
-          Text(item.createdBy.role)
-            .fontSize(10).fontColor($r('app.color.text_secondary'))
-            .padding({ left: 7, right: 7, top: 3, bottom: 3 })
-            .backgroundColor($r('app.color.surface_muted')).borderRadius(9)
-        }
-        Blank()
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
         Text(formatReportTime(item.createdAt))
-          .fontSize(11).fontColor($r('app.color.text_tertiary')).maxLines(1)
+          .fontSize(11).fontColor($r('app.color.text_tertiary')).maxLines(1).width(138)
+          .textAlign(TextAlign.End)
       }
       .width('100%')
       Row({ space: 10 }) {
@@ -157,8 +196,8 @@ export struct HistoryView {
       MoleculeBackdrop()
       Column({ space: 12 }) {
         PageHeader({
-          title: '团队历史',
-          subtitle: '共享每一次识别、校验、确认与收藏。',
+          title: this.isDeveloper ? '团队历史' : '我的历史',
+          subtitle: this.isDeveloper ? '识别与复核记录' : '个人识别记录',
           currentUser: this.currentUser,
           onOpenSettings: this.onOpenSettings,
           onOpenGuide: this.onOpenGuide
@@ -180,51 +219,45 @@ export struct HistoryView {
         }
         .width('100%')
 
-        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-            this.scopeChip('全组', 'all', '')
-            this.scopeChip('我的', 'mine', '')
-        }
-        .width('100%')
-
-        if (this.members.length > 0) {
-          Column({ space: 5 }) {
-            Text('按创建者筛选')
-              .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
-            Scroll() {
-              Row() {
-                ForEach(this.members, (member: UserProfile) => {
-                  this.scopeChip(member.displayName, 'all', member.userId)
-                }, (member: UserProfile) => member.userId)
-              }
-            }
-            .width('100%')
-            .scrollable(ScrollDirection.Horizontal)
-            .scrollBar(BarState.Off)
-            .edgeEffect(EdgeEffect.None)
+        if (this.isDeveloper) {
+          Scroll() {
+            Row() {
+              this.scopeChip('全组', 'all', '')
+              this.scopeChip('我的', 'mine', '')
+              ForEach(this.members, (member: UserProfile) => {
+                this.scopeChip(member.displayName, 'all', member.userId)
+              }, (member: UserProfile) => member.userId)
+            }.width('100%')
           }
-          .alignItems(HorizontalAlign.Start).width('100%')
+          .width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.None)
         }
 
-        Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
-            this.statusChip('全部', 'all')
-            this.statusChip('成功', 'success')
-            this.statusChip('待复核', 'review_needed')
-            this.statusChip('识别拒绝', 'rejected')
-            this.statusChip('失败', 'failed')
-            Row({ space: 6 }) {
-              Text('★').fontSize(14).fontColor($r('app.color.favorite'))
-              Text('仅收藏').fontSize(13).fontColor($r('app.color.text_body'))
-              Toggle({ type: ToggleType.Switch, isOn: this.favoritesOnly })
-                .width(40)
-                .onChange((value: boolean) => {
-                  this.onFiltersChanged(this.scope, this.ownerUserId, this.status, value)
-                })
+        Row({ space: 8 }) {
+          Scroll() {
+            Row() {
+              this.statusChip('全部', 'all')
+              this.statusChip('成功', 'success')
+              this.statusChip('待复核', 'review_needed')
+              this.statusChip('识别拒绝', 'rejected')
+              this.statusChip('失败', 'failed')
             }
-            .height(40)
-            .padding({ left: 10, right: 10 })
-            .backgroundColor($r('app.color.surface_muted'))
-            .borderRadius(17)
-            .margin({ right: 8, bottom: 8 })
+          }
+          .layoutWeight(1).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+          .edgeEffect(EdgeEffect.None)
+          Row({ space: 5 }) {
+            Text('★').fontSize(13).fontColor($r('app.color.favorite'))
+            Text('收藏').fontSize(12).fontColor($r('app.color.text_body'))
+            Toggle({ type: ToggleType.Switch, isOn: this.favoritesOnly })
+              .width(36)
+              .onChange((value: boolean) => {
+                this.onFiltersChanged(this.scope, this.ownerUserId, this.status, value)
+              })
+          }
+          .height(36).padding({ left: 8, right: 8 })
+          .backgroundColor($r('app.color.surface_muted'))
+          .border({ width: 1, color: $r('app.color.border') })
+          .borderRadius(18)
         }
         .width('100%')
 
@@ -258,7 +291,8 @@ export struct HistoryView {
               } else {
                 ForEach(this.items, (item: HistoryItem) => {
                   ListItem() { this.historyCard(item) }
-                }, (item: HistoryItem) => item.analysisId)
+                }, (item: HistoryItem) =>
+                  `${item.analysisId}:${item.status}:${item.decision}:${item.confirmed}:${item.needsReview}:${item.isFavorite}`)
               }
 
               if (this.errorMessage.length > 0 && this.items.length > 0) {

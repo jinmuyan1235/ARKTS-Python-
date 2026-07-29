@@ -3,6 +3,7 @@ import { util } from '@kit.ArkTS'
 
 const API_KEY_ALIAS: string = 'molecule_vision_api_key'
 const AUTH_TOKEN_ALIAS: string = 'molecule_vision_auth_token'
+const PASSWORD_ALIAS_PREFIX: string = 'molecule_vision_password_'
 
 function bytes(value: string): Uint8Array {
   return new util.TextEncoder().encodeInto(value)
@@ -33,8 +34,8 @@ export class SecureStore {
     }
   }
 
-  private static async write(alias: string, value: string): Promise<void> {
-    const normalized = value.trim()
+  private static async write(alias: string, value: string, trimValue: boolean = true): Promise<void> {
+    const normalized = trimValue ? value.trim() : value
     await SecureStore.remove(alias)
     if (normalized.length === 0) {
       return
@@ -70,6 +71,22 @@ export class SecureStore {
 
   static saveAuthToken(value: string): Promise<void> {
     return SecureStore.write(AUTH_TOKEN_ALIAS, value)
+  }
+
+  private static passwordAlias(username: string): string {
+    return `${PASSWORD_ALIAS_PREFIX}${username.trim().toLowerCase()}`
+  }
+
+  static readPassword(username: string): Promise<string> {
+    return SecureStore.read(SecureStore.passwordAlias(username))
+  }
+
+  static savePassword(username: string, value: string): Promise<void> {
+    return SecureStore.write(SecureStore.passwordAlias(username), value, false)
+  }
+
+  static removePassword(username: string): Promise<void> {
+    return SecureStore.remove(SecureStore.passwordAlias(username))
   }
 
   static async clearSession(): Promise<void> {

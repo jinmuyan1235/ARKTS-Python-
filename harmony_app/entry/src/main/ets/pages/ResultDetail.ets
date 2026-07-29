@@ -217,6 +217,13 @@ struct ResultDetail {
     router.back()
   }
 
+  private async openExportCenter(): Promise<void> {
+    await router.pushUrl({
+      url: 'pages/ExportCenter',
+      params: { scope: 'analysis', resourceId: this.analysisId }
+    })
+  }
+
   private async copyText(value: string | null, label: string): Promise<void> {
     if (value === null || value.length === 0) {
       return
@@ -439,8 +446,10 @@ struct ResultDetail {
     Row({ space: 10 }) {
       Column({ space: 2 }) {
         Text(title).fontSize(17).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
         if (caption.length > 0) {
           Text(caption).fontSize(12).fontColor($r('app.color.text_secondary')).maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
         }
       }
       .alignItems(HorizontalAlign.Start)
@@ -501,6 +510,7 @@ struct ResultDetail {
         Column({ space: 4 }) {
           Text(this.conclusion(data).label)
             .fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
           Text(this.conclusion(data).message)
             .fontSize(13).lineHeight(19).fontColor($r('app.color.text_body')).width('100%')
         }
@@ -515,12 +525,13 @@ struct ResultDetail {
       }
       .width('100%').alignItems(VerticalAlign.Top)
 
-      Row({ space: 7 }) {
+      Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
         StatusPill({ symbol: data.status === 'success' ? '✓' : '!',
           label: data.status === 'success' ? '报告已生成' : '分析失败',
           tone: data.status === 'success' ? 'success' : 'danger' })
         if (data.riskLevel !== null && data.riskLevel.length > 0) {
           StatusPill({ symbol: '!', label: `风险 ${data.riskLevel}`, tone: 'warning' })
+            .margin({ left: 7, bottom: 5 })
         }
       }
       .width('100%')
@@ -529,7 +540,8 @@ struct ResultDetail {
       Text(`${data.createdBy === null ? '历史数据' : data.createdBy.displayName} · ${formatReportTime(data.createdAt)}`)
         .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
       Text(`分析编号 ${data.analysisId}`)
-        .fontSize(10).fontColor($r('app.color.text_tertiary')).maxLines(1).width('100%')
+        .fontSize(10).fontColor($r('app.color.text_tertiary')).maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
     }
     .alignItems(HorizontalAlign.Start)
     .width('100%').padding(16)
@@ -1040,6 +1052,9 @@ struct ResultDetail {
             .onClick(() => this.shareCard()).accessibilityText('分享不含原图和敏感信息的结果卡片')
         }
         .width('100%')
+        Button('打开导出中心').width('100%').height(44)
+          .backgroundColor($r('app.color.primary_soft')).fontColor($r('app.color.primary'))
+          .onClick(() => this.openExportCenter()).accessibilityText('保存或分享分析导出文件')
       }
       Text(data.message).fontSize(13).fontColor($r('app.color.text_secondary')).width('100%')
         .padding({ left: 4, right: 4 })

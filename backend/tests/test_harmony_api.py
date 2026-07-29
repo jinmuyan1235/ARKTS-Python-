@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import json
+import re
 import shutil
 import time
+from threading import Event
 from types import SimpleNamespace
 from typing import Iterator
 
@@ -15,6 +18,8 @@ from PIL import Image
 import pytest
 
 import api_server
+from src.analysis.correction import apply_smiles_correction, save_correction_feedback
+from src.analysis.molecule_report import MoleculeReportGenerator
 from src.storage.analysis_repository import AnalysisRepository
 from src.storage.auth_repository import AuthRepository
 
@@ -240,9 +245,126 @@ def test_register_login_logout_members_and_avatar(
     members = client.get("/api/v1/auth/members", headers=auth_headers)
     assert members.status_code == 200
     assert members.json()[0]["avatarUrl"]
+    public_members = client.get("/api/v1/auth/members", headers=API_HEADERS)
+    assert public_members.status_code == 200
+    assert public_members.json()[0]["username"] == "researcher"
 
     assert client.post("/api/v1/auth/logout", headers=login_headers).status_code == 204
     assert client.get("/api/v1/auth/me", headers=login_headers).status_code == 401
+
+
+def test_product_user_and_developer_accounts_have_separate_access(
+    harmony_client: tuple[TestClient, Path, dict[str, str]],
+) -> None:
+    client, _runs_dir, developer_headers = harmony_client
+    registered = client.post(
+        "/api/v1/auth/register",
+        headers=API_HEADERS,
+        json={
+            "username": "product-user",
+            "displayName": "普通使用者",
+            "password": "product-password-123",
+            "role": "架构统筹",
+            "accountType": "user",
+        },
+    )
+    assert registered.status_code == 201
+    assert registered.json()["user"]["accountType"] == "user"
+    assert registered.json()["user"]["role"] == ""
+    user_headers = {
+        **API_HEADERS,
+        "Authorization": f"Bearer {registered.json()['token']}",
+    }
+
+    wrong_portal = client.post(
+        "/api/v1/auth/login",
+        headers=API_HEADERS,
+        json={
+            "username": "product-user",
+            "password": "product-password-123",
+            "accountType": "developer",
+        },
+    )
+    assert wrong_portal.status_code == 403
+    assert "开发者" in wrong_portal.json()["detail"]
+    user_login = client.post(
+        "/api/v1/auth/login",
+        headers=API_HEADERS,
+        json={
+            "username": "product-user",
+            "password": "product-password-123",
+            "accountType": "user",
+        },
+    )
+    assert user_login.status_code == 200
+
+    members = client.get("/api/v1/auth/members", headers=developer_headers)
+    assert members.status_code == 200
+    assert all(member["accountType"] == "developer" for member in members.json())
+    assert "product-user" not in {member["username"] for member in members.json()}
+    assert client.get("/api/v1/feedback", headers=user_headers).status_code == 403
+    assert client.post("/api/v1/documents", headers=user_headers).status_code == 403
+
+    developer_result = client.post(
+        "/api/v1/analyze-smiles", headers=developer_headers, json={"smiles": "CCO"}
+    ).json()
+    user_result = client.post(
+        "/api/v1/analyze-smiles", headers=user_headers, json={"smiles": "CCN"}
+    ).json()
+    user_history = client.get("/api/v1/analyses?scope=all", headers=user_headers)
+    assert user_history.status_code == 200
+    assert {item["analysisId"] for item in user_history.json()["items"]} == {user_result["analysisId"]}
+    foreign_owner = developer_result["createdBy"]["userId"]
+    assert client.get(
+        f"/api/v1/analyses?ownerUserId={foreign_owner}", headers=user_headers
+    ).status_code == 403
+    assert client.get(
+        f"/api/v1/analyses/{developer_result['analysisId']}", headers=user_headers
+    ).status_code in {403, 404}
+
+
+def test_serial_job_store_pause_resume_and_cancel(tmp_path: Path) -> None:
+    executor = ThreadPoolExecutor(max_workers=1)
+    store = api_server.JobStore(tmp_path / "jobs", executor)
+    started = Event()
+    release = Event()
+
+    def blocking_task() -> dict:
+        started.set()
+        assert release.wait(timeout=3)
+        return {}
+
+    running = store.create("test", "running-analysis", owner_user_id="owner")
+    store.submit_task(running, blocking_task, "running", "completed")
+    assert started.wait(timeout=2)
+    assert store.pause(running["jobId"])["status"] == "pausing"
+    assert store.resume(running["jobId"])["status"] == "running"
+    assert store.cancel(running["jobId"])["status"] == "cancelling"
+    release.set()
+    for _attempt in range(50):
+        if store.load(running["jobId"])["status"] == "cancelled":
+            break
+        time.sleep(0.02)
+    assert store.load(running["jobId"])["status"] == "cancelled"
+
+    queue_gate = Event()
+    queue_started = Event()
+
+    def queue_blocker() -> dict:
+        queue_started.set()
+        assert queue_gate.wait(timeout=3)
+        return {}
+
+    first = store.create("test", "first", owner_user_id="owner")
+    second = store.create("test", "second", owner_user_id="owner")
+    store.submit_task(first, queue_blocker, "running", "completed")
+    assert queue_started.wait(timeout=2)
+    store.submit_task(second, lambda: {}, "running", "completed")
+    assert store.pause(second["jobId"])["status"] == "paused"
+    assert store.resume(second["jobId"])["status"] == "queued"
+    assert store.cancel(second["jobId"])["status"] == "cancelled"
+    queue_gate.set()
+    executor.shutdown(wait=True)
 
 
 def test_profile_update_and_password_change_rotates_sessions(
@@ -342,6 +464,137 @@ def test_smiles_history_favorite_and_index_only_delete(
     assert client.get(f"/api/v1/analyses/{analysis_id}", headers=auth_headers).status_code == 404
 
 
+def test_single_export_center_signed_downloads_and_confirmation_gate(
+    harmony_client: tuple[TestClient, Path, dict[str, str]],
+) -> None:
+    client, runs_dir, auth_headers = harmony_client
+    manual = client.post("/api/v1/analyze-smiles", headers=auth_headers, json={"smiles": "CCO"})
+    assert manual.status_code == 200
+    manual_id = manual.json()["analysisId"]
+    center = client.get(f"/api/v1/analyses/{manual_id}/exports", headers=auth_headers)
+    assert center.status_code == 200
+    items = {item["format"]: item for item in center.json()["items"]}
+    assert set(items) == {"csv", "json", "pdf", "smi", "mol", "sdf", "zip"}
+    assert all(item["available"] for item in items.values())
+    assert center.json()["expiresInSeconds"] == api_server.MOBILE_EXPORT_TTL_SECONDS
+
+    downloaded = {export_format: client.get(item["downloadUrl"]) for export_format, item in items.items()}
+    assert all(response.status_code == 200 for response in downloaded.values())
+    assert downloaded["pdf"].content.startswith(b"%PDF")
+    assert downloaded["zip"].content.startswith(b"PK")
+    assert str(runs_dir).encode() not in downloaded["json"].content
+    bad_url = items["csv"]["downloadUrl"].rsplit("token=", 1)[0] + "token=wrong"
+    assert client.get(bad_url).status_code == 401
+    # Replace the actual expiry without needing to know the server clock.
+    expired_url = re.sub(r"expires=\d+", "expires=1", items["csv"]["downloadUrl"])
+    assert client.get(expired_url).status_code == 410
+    direct = client.get(f"/api/v1/analyses/{manual_id}/exports/pdf", headers=auth_headers)
+    assert direct.status_code == 200
+    assert direct.json()["format"] == "pdf"
+    assert client.get(direct.json()["downloadUrl"]).content.startswith(b"%PDF")
+
+    sample = client.post("/api/v1/jobs/samples/aspirin", headers=auth_headers).json()
+    candidate = _wait_for_job(client, sample["jobId"], auth_headers)
+    candidate_id = candidate["analysisId"]
+    candidate_center = client.get(f"/api/v1/analyses/{candidate_id}/exports", headers=auth_headers)
+    candidate_items = {item["format"]: item for item in candidate_center.json()["items"]}
+    assert candidate_items["csv"]["available"] is True
+    assert candidate_items["pdf"]["available"] is True
+    assert candidate_items["smi"]["available"] is False
+    assert candidate_items["sdf"]["available"] is False
+    assert candidate_items["zip"]["available"] is False
+    assert "人工确认" in candidate_items["sdf"]["reason"]
+    assert client.get(
+        f"/api/v1/analyses/{candidate_id}/exports/sdf", headers=auth_headers
+    ).status_code == 409
+
+    confirmed = client.post(
+        f"/api/v1/analyses/{candidate_id}/review",
+        headers=auth_headers,
+        json={"action": "confirm"},
+    )
+    assert confirmed.status_code == 200
+    confirmed_center = client.get(f"/api/v1/analyses/{candidate_id}/exports", headers=auth_headers)
+    confirmed_items = {item["format"]: item for item in confirmed_center.json()["items"]}
+    assert confirmed_items["smi"]["available"] is True
+    assert confirmed_items["sdf"]["available"] is True
+    assert confirmed_items["zip"]["available"] is True
+
+
+def test_health_reports_detected_model_queue_and_warmup_state(
+    harmony_client: tuple[TestClient, Path, dict[str, str]],
+) -> None:
+    client, _runs_dir, _auth_headers = harmony_client
+    response = client.get("/api/v1/health", headers=API_HEADERS)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["apiVersion"] == "2.5"
+    assert payload["modelRuntime"]["state"] == "demo"
+    assert "非真实模型" in payload["modelRuntime"]["label"]
+    assert payload["modelRuntime"]["warmup"]["state"] == "skip"
+    assert payload["modelRuntime"]["weights"]["state"] in {"pass", "skip", "warn"}
+    assert set(payload["taskQueue"]) >= {"queued", "running", "active", "failed", "single", "batch"}
+
+
+def test_feedback_review_api_blocks_pending_manifest_and_exposes_audit(
+    harmony_client: tuple[TestClient, Path, dict[str, str]],
+    tmp_path: Path,
+) -> None:
+    client, _runs_dir, auth_headers = harmony_client
+    source = Path(api_server.config.SAMPLE_DIR) / "aspirin.png"
+    report = MoleculeReportGenerator("manual", tmp_path / "feedback-report").generate(
+        smiles="CCO", analysis_id="mobile-feedback-001"
+    )
+    report["input"].update({
+        "type": "image", "filename": "feedback.png", "path": str(source), "image_sha256": "feedback-sha-001",
+    })
+    corrected = apply_smiles_correction(report, "CCN", tmp_path / "feedback-report")
+    save_correction_feedback(
+        corrected,
+        api_server.config.DATA_DIR,
+        correction_type="atom",
+        review_status="pending",
+        feedback_action="correction_only",
+        include_in_training=False,
+        source_reference="internal-lab-record",
+        source_license="internal",
+        notes="awaiting independent review",
+    )
+
+    listing = client.get("/api/v1/feedback?status=pending", headers=auth_headers)
+    assert listing.status_code == 200
+    assert listing.json()["total"] == 1
+    assert listing.json()["items"][0]["trainingEligibility"]["eligible"] is False
+
+    detail = client.get("/api/v1/feedback/mobile-feedback-001", headers=auth_headers)
+    assert detail.status_code == 200
+    assert detail.json()["predictedSmiles"] == "CCO"
+    assert detail.json()["correctedSmiles"] == "CCN"
+    assert detail.json()["sourceLicense"] == "internal"
+    assert client.get(detail.json()["imageUrl"]).status_code == 200
+
+    before = client.get("/api/v1/feedback/manifest", headers=auth_headers)
+    assert before.status_code == 200
+    assert before.json()["exportedCount"] == 0
+
+    approved = client.patch(
+        "/api/v1/feedback/mobile-feedback-001/review",
+        headers=auth_headers,
+        json={"action": "approve", "note": "structure and provenance checked"},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["reviewStatus"] == "verified"
+    assert approved.json()["trainingEligibility"]["eligible"] is True
+    assert approved.json()["history"][-1]["operation"] == "review_verified"
+
+    after = client.get("/api/v1/feedback/manifest", headers=auth_headers)
+    assert after.status_code == 200
+    assert after.json()["exportedCount"] == 1
+    manifest = client.get(after.json()["item"]["downloadUrl"])
+    assert manifest.status_code == 200
+    assert b"mobile-feedback-001" in manifest.content
+
+
 def test_shared_history_creator_and_owner_filters(
     harmony_client: tuple[TestClient, Path, dict[str, str]],
 ) -> None:
@@ -435,6 +688,167 @@ def test_sample_and_uploaded_image_jobs_complete(
     assert client.get(source_url).status_code == 404
 
 
+def test_batch_snapshot_can_serve_managed_source_image(
+    harmony_client: tuple[TestClient, Path, dict[str, str]],
+) -> None:
+    client, _runs_dir, auth_headers = harmony_client
+    analysis_id = "a" * 32
+    job_root = Path(api_server.config.DATA_DIR) / "api_batch_jobs" / "batch_test"
+    input_path = job_root / "input" / "0001_test.png"
+    report_path = job_root / "outputs" / "batch_ui_result_reports" / f"{analysis_id}.json"
+    input_path.parent.mkdir(parents=True)
+    report_path.parent.mkdir(parents=True)
+    Image.new("RGB", (32, 24), color="white").save(input_path)
+    report = {
+        "analysis_id": analysis_id,
+        "created_at": "2026-07-29T00:00:00+00:00",
+        "status": "success",
+        "message": "ok",
+        "input": {"type": "image", "filename": input_path.name, "path": str(input_path)},
+        "ocsr": {"backend": "demo", "predicted_smiles": "CCO"},
+        "final": {"smiles": "CCO"},
+    }
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    api_server.AnalysisRepository().save_analysis(report, report_path)
+
+    detail = client.get(f"/api/v1/analyses/{analysis_id}", headers=auth_headers)
+    assert detail.status_code == 200
+    source_url = detail.json()["sourceImageUrl"]
+    assert source_url
+    assert client.get(source_url).status_code == 200
+
+
+def test_batch_upload_progress_controls_and_failed_retry(
+    harmony_client: tuple[TestClient, Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _runs_dir, auth_headers = harmony_client
+    store = client.app.state.batch_job_store
+    created_uploads: list[tuple[str, bytes]] = []
+
+    def fake_start_uploads(uploads, backend, runtime_config=None, *, store, owner_user_id=None):
+        created_uploads.extend(uploads)
+        input_dir = store.job_dir("mobile-batch") / "input"
+        output_dir = store.job_dir("mobile-batch") / "outputs"
+        input_dir.mkdir(parents=True)
+        output_dir.mkdir(parents=True)
+        for index, (name, content) in enumerate(uploads):
+            (input_dir / f"{index}_{name}").write_bytes(content)
+        state = store.create(
+            "mobile-batch",
+            backend=backend,
+            input_dir=input_dir,
+            output_dir=output_dir,
+            total=len(uploads),
+            source="upload",
+            owner_user_id=owner_user_id,
+        )
+        failed_report = {
+            "analysis_id": "f" * 32,
+            "status": "failed",
+            "message": "fixture failure",
+            "input": {"type": "image", "filename": "second.png", "path": str(input_dir / "1_second.png")},
+            "validation": {"valid": False},
+        }
+        store.checkpoint_path("mobile-batch").write_text(json.dumps({
+            "schema_version": 1,
+            "reports_by_path": {str(input_dir / "1_second.png"): failed_report},
+        }), encoding="utf-8")
+        return store.update(
+            "mobile-batch",
+            status="running",
+            completed=1,
+            failed=1,
+            current_file="second.png",
+            current_index=2,
+        )
+
+    monkeypatch.setattr(api_server, "start_batch_job_from_uploads", fake_start_uploads)
+    monkeypatch.setattr(api_server, "refresh_batch_job", lambda job_id, store: store.read(job_id))
+    monkeypatch.setattr(
+        api_server,
+        "pause_batch_job",
+        lambda job_id, store: store.update(job_id, status="paused", message="paused"),
+    )
+    monkeypatch.setattr(
+        api_server,
+        "resume_batch_job",
+        lambda job_id, store: store.update(job_id, status="running", message="resumed"),
+    )
+    monkeypatch.setattr(
+        api_server,
+        "cancel_batch_job",
+        lambda job_id, store, force=False: store.update(job_id, status="cancelling", message="cancelling"),
+    )
+
+    image_one = BytesIO()
+    image_two = BytesIO()
+    Image.new("RGB", (32, 24), "white").save(image_one, format="PNG")
+    Image.new("RGB", (24, 32), "white").save(image_two, format="PNG")
+    uploaded = client.post(
+        "/api/v1/batch-jobs",
+        headers=auth_headers,
+        files=[
+            ("files", ("first.png", image_one.getvalue(), "image/png")),
+            ("files", ("second.png", image_two.getvalue(), "image/png")),
+        ],
+    )
+    assert uploaded.status_code == 202
+    payload = uploaded.json()
+    assert payload["jobId"] == "mobile-batch"
+    assert payload["total"] == 2
+    assert payload["completed"] == 1
+    assert payload["progress"] == 0.5
+    assert payload["categoryStats"]["failed"] == 1
+    assert payload["results"][0]["filename"] == "second.png"
+    assert payload["results"][0]["category"] == "failed"
+    assert len(created_uploads) == 2
+
+    assert client.post("/api/v1/batch-jobs/mobile-batch/pause", headers=auth_headers).json()["status"] == "paused"
+    assert client.post("/api/v1/batch-jobs/mobile-batch/resume", headers=auth_headers).json()["status"] == "running"
+    assert client.post("/api/v1/batch-jobs/mobile-batch/cancel", headers=auth_headers).json()["status"] == "cancelling"
+
+    store.update("mobile-batch", status="failed")
+    export_center = client.get("/api/v1/batch-jobs/mobile-batch/exports", headers=auth_headers)
+    assert export_center.status_code == 200
+    export_items = {item["format"]: item for item in export_center.json()["items"]}
+    assert export_items["csv"]["available"] is True
+    assert export_items["json"]["available"] is True
+    assert export_items["pdf"]["available"] is True
+    assert export_items["smi"]["available"] is False
+    assert export_items["sdf"]["available"] is False
+    assert export_items["zip"]["available"] is False
+
+    def fake_retry(result, backend, mode, runtime_config=None, *, store, parent_job_id=None,
+                   analysis_ids=None, owner_user_id=None):
+        assert mode == "failed"
+        assert len(result["reports"]) == 1
+        input_dir = store.job_dir("mobile-retry") / "input"
+        output_dir = store.job_dir("mobile-retry") / "outputs"
+        input_dir.mkdir(parents=True)
+        output_dir.mkdir(parents=True)
+        state = store.create(
+            "mobile-retry",
+            backend=backend,
+            input_dir=input_dir,
+            output_dir=output_dir,
+            total=1,
+            source="retry",
+            parent_job_id=parent_job_id,
+            retry_mode=mode,
+            owner_user_id=owner_user_id,
+        )
+        return store.update("mobile-retry", status="running")
+
+    monkeypatch.setattr(api_server, "start_batch_retry_job", fake_retry)
+    retried = client.post("/api/v1/batch-jobs/mobile-batch/retry-failed", headers=auth_headers)
+    assert retried.status_code == 202
+    assert retried.json()["jobId"] == "mobile-retry"
+    assert retried.json()["parentJobId"] == "mobile-batch"
+    store.update("mobile-retry", owner_user_id="another-user")
+    assert client.get("/api/v1/batch-jobs/mobile-retry", headers=auth_headers).status_code == 404
+
+
 def test_review_rejects_invalid_without_overwrite_then_confirms(
     harmony_client: tuple[TestClient, Path, dict[str, str]],
 ) -> None:
@@ -524,6 +938,54 @@ def test_review_rejects_invalid_without_overwrite_then_confirms(
     )
     assert reconfirmed.status_code == 200
     assert reconfirmed.json()["review"]["status"] == "confirmed"
+
+
+def test_completed_batch_status_uses_latest_human_review(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analysis_id = "batch-reviewed-analysis"
+    snapshot = {
+        "analysis_id": analysis_id,
+        "status": "success",
+        "input": {"type": "image", "filename": "reviewed.png"},
+        "ocsr": {"smiles": "CCO", "confidence": 0.91},
+        "final": {"smiles": "CCO"},
+        "validation": {"valid": True, "canonical_smiles": "CCO"},
+        "recognition_decision": {"decision": "review_needed", "manual_review_recommended": True},
+        "human_review": {"required": True, "status": "unconfirmed", "confirmed": False},
+    }
+    latest = {
+        **snapshot,
+        "human_review": {"required": True, "status": "confirmed", "confirmed": True},
+    }
+
+    class FakeRepository:
+        def load_report(self, requested_id: str):
+            return latest if requested_id == analysis_id else None
+
+    monkeypatch.setattr(api_server, "AnalysisRepository", FakeRepository)
+    store = api_server.BatchJobStore(tmp_path / "batch-jobs")
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    output_dir.mkdir()
+    store.create("reviewed-batch", backend="fixture", input_dir=input_dir, output_dir=output_dir, total=1)
+    store.checkpoint_path("reviewed-batch").write_text(json.dumps({
+        "reports_by_path": {str(input_dir / "reviewed.png"): snapshot},
+    }), encoding="utf-8")
+    state = store.update(
+        "reviewed-batch", status="completed", completed=1, review_needed=1,
+        summary={"review_needed": 1},
+    )
+
+    payload = api_server._batch_job_dto(store, state)
+
+    assert payload["results"][0]["confirmed"] is True
+    assert payload["results"][0]["reviewStatus"] == "confirmed"
+    assert payload["results"][0]["needsReview"] is False
+    assert payload["categoryStats"]["reviewNeeded"] == 0
+    assert payload["categoryStats"]["accepted"] == 1
 
 
 def test_restart_reconciliation_completes_report_or_interrupts(
