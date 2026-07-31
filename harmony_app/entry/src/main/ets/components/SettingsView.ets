@@ -1,6 +1,7 @@
 import { HealthResult, UserProfile } from '../model/VisionResult'
 import { TEAM_ROLE_OPTIONS } from '../model/TeamRoles'
 import { AppEmptyState, AppErrorState, LoadingSkeleton, MoleculeBackdrop, SectionHeader, StatusPill } from './CommonStates'
+import { ConnectionSetupCard } from './ConnectionSetupCard'
 import { PageHeader, ProfileAvatar } from './PageChrome'
 
 @Component
@@ -226,38 +227,21 @@ export struct SettingsView {
           .border({ width: 1, color: $r('app.color.border') })
           .borderRadius($r('app.float.card_radius'))
 
-          if (this.isDeveloper) {
-            Column({ space: 12 }) {
-            this.cardTitle('⚗', '电脑端识别服务', '局域网连接 DECIMER、MolScribe 或演示后端')
-            Text('服务地址').fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_body')).width('100%')
-            TextInput({ text: this.apiBaseUrl, placeholder: 'http://192.168.5.13:8000' })
-              .width('100%').height(46).type(InputType.Normal).backgroundColor($r('app.color.surface_soft'))
-              .onChange((value: string) => this.onApiBaseUrlChanged(value))
-            Text('API 密钥').fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_body')).width('100%')
-            TextInput({ text: this.apiKey, placeholder: '与电脑启动命令中的 -ApiKey 一致' })
-              .width('100%').height(46).type(InputType.Password).backgroundColor($r('app.color.surface_soft'))
-              .onChange((value: string) => this.onApiKeyChanged(value))
-            Row() {
-              StatusPill({ symbol: this.serviceSummary.startsWith('已连接') ? '✓' : '!', label: this.serviceSummary,
-                tone: this.serviceSummary.startsWith('已连接') ? 'success' : 'warning' })
-              Blank()
-              Button(this.checking ? '检测中…' : '检测连接')
-                .height(44).enabled(!this.checking)
-                .backgroundColor($r('app.color.surface_muted')).fontColor($r('app.color.primary'))
-                .onClick(this.onCheckService)
-            }
-            .width('100%')
-            Button(this.savingSettings ? '正在保存…' : '保存连接设置')
-              .width('100%').height(48).enabled(!this.savingSettings && !this.checking)
-              .fontColor($r('app.color.text_on_primary')).backgroundColor($r('app.color.primary'))
-              .onClick(this.onSaveSettings)
-          }
-          .alignItems(HorizontalAlign.Start)
-          .width('100%').padding(18)
-          .backgroundColor($r('app.color.surface'))
-          .border({ width: 1, color: $r('app.color.border') })
-            .borderRadius($r('app.float.card_radius'))
+          ConnectionSetupCard({
+            apiBaseUrl: this.apiBaseUrl,
+            apiKey: this.apiKey,
+            serviceSummary: this.serviceSummary,
+            checking: this.checking,
+            saving: this.savingSettings,
+            forceExpanded: true,
+            showActions: true,
+            onApiBaseUrlChanged: this.onApiBaseUrlChanged,
+            onApiKeyChanged: this.onApiKeyChanged,
+            onCheck: this.onCheckService,
+            onSave: this.onSaveSettings
+          })
 
+          if (this.isDeveloper) {
             Column({ space: 10 }) {
             this.cardTitle('◫', '模型运行状态', '')
             if (this.serviceHealth === undefined) {

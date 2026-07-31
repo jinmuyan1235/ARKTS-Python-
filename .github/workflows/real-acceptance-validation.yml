@@ -6,12 +6,16 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
           cache: pip
+          cache-dependency-path: backend/requirements.txt
       - name: Install validation dependencies
         run: python -m pip install -r requirements.txt
       - name: Download fixed starter acceptance set
@@ -23,6 +27,6 @@ jobs:
         with:
           name: real-acceptance-validation-logs
           path: |
-            real_acceptance_download.log
-            real_acceptance_validation.log
-            data/ocsr_real_acceptance/download_metadata.json
+            backend/real_acceptance_download.log
+            backend/real_acceptance_validation.log
+            backend/data/ocsr_real_acceptance/download_metadata.json

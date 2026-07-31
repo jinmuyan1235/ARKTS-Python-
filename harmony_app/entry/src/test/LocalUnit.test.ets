@@ -31,12 +31,14 @@ import { HistoryController } from '../main/ets/controllers/HistoryController'
 import { BatchController, isTerminalBatchStatus, MAX_MOBILE_BATCH_IMAGES } from '../main/ets/controllers/BatchController'
 import { batchCategoryLabel, batchPercent } from '../main/ets/components/BatchView'
 import { BatchJob } from '../main/ets/model/BatchResult'
-import { normalizeStoredJobIds } from '../main/ets/services/SettingsStore'
+import { normalizeStoredDocumentTask, normalizeStoredJobIds } from '../main/ets/services/SettingsStore'
+import { moveRegionBox, normalizeRegionBox, RegionBox, resizeRegionBox } from '../main/ets/services/RegionGeometry'
 import { documentUploadInfo } from '../main/ets/services/DocumentApi'
 import { exportFileName, exportManifestPath, exportSizeLabel } from '../main/ets/services/ExportApi'
 import { ExportItem } from '../main/ets/model/ExportResult'
 import { feedbackQueryPath } from '../main/ets/services/DatasetApi'
 import { feedbackStatusLabel } from '../main/ets/components/DatasetReviewView'
+import { connectionNeedsSetup } from '../main/ets/components/ConnectionSetupCard'
 import { AuthResult, HistoryItem, HistoryPage, ReviewRequest, VisionAnalysisResult, VisionJob } from '../main/ets/model/VisionResult'
 import {
   FavoritePayload,
@@ -103,6 +105,12 @@ export default function localUnitTest() {
       }
       controller.select(imageUris)
       expect(controller.selectedUris.length).assertEqual(MAX_MOBILE_BATCH_IMAGES)
+      controller.removeSelected(0)
+      expect(controller.selectedUris.length).assertEqual(MAX_MOBILE_BATCH_IMAGES - 1)
+      expect(controller.remainingCapacity()).assertEqual(1)
+      controller.append(['file://image-1.png', 'file://new-image.png'])
+      expect(controller.selectedUris.length).assertEqual(MAX_MOBILE_BATCH_IMAGES)
+      expect(controller.selectedUris[MAX_MOBILE_BATCH_IMAGES - 1]).assertEqual('file://new-image.png')
       const job: BatchJob = {
         jobId: 'batch-restored', status: 'running', message: '识别中', backend: 'demo', source: 'upload',
         parentJobId: null, total: 10, completed: 4, progress: 0.4, currentFile: 'image-5.png', currentIndex: 5,
@@ -123,6 +131,34 @@ export default function localUnitTest() {
       expect(controller.canRetryFailed()).assertTrue()
       expect(isTerminalBatchStatus('cancelled')).assertTrue()
     })
+
+    it('guidesFirstConnectionForEveryAccountType', 0, () => {
+      expect(connectionNeedsSetup('', '')).assertTrue()
+      expect(connectionNeedsSetup('http://192.168.1.8:8000', '')).assertTrue()
+      expect(connectionNeedsSetup('http://192.168.1.8:8000', 'local-key')).assertFalse()
+    })
+
+    it('movesAndResizesDocumentRecognitionBoxes', 0, () => {
+      const box: RegionBox = normalizeRegionBox([100, 200, 300, 500], 1000, 1200)
+      const moved: RegionBox = moveRegionBox(box, 10, -20, 100, 240, 1000, 1200)
+      expect(Math.round(moved.x1)).assertEqual(200)
+      expect(Math.round(moved.y1)).assertEqual(100)
+      expect(Math.round(moved.x2)).assertEqual(400)
+      expect(Math.round(moved.y2)).assertEqual(400)
+      const resized: RegionBox = resizeRegionBox(box, 20, 24, 100, 240, 1000, 1200)
+      expect(Math.round(resized.x2)).assertEqual(500)
+      expect(Math.round(resized.y2)).assertEqual(620)
+    })
+
+    it('keepsDocumentAndJobIdsConsistentForRestartRecovery', 0, () => {
+      const active = normalizeStoredDocumentTask(' document-1 ', ' job-1 ')
+      expect(active.documentId).assertEqual('document-1')
+      expect(active.jobId).assertEqual('job-1')
+      const cleared = normalizeStoredDocumentTask('', 'orphan-job')
+      expect(cleared.documentId).assertEqual('')
+      expect(cleared.jobId).assertEqual('')
+    })
+
     it('normalizesServiceUrls', 0, () => {
       expect(normalizeBaseUrl(' http://192.168.5.13:8000/// ')).assertEqual('http://192.168.5.13:8000')
       expect(validateConnectionForm('192.168.5.13:8000', 'secret').valid).assertFalse()

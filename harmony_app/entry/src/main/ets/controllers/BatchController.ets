@@ -24,6 +24,25 @@ export class BatchController {
     this.selectedUris = imageUris.slice(0, MAX_MOBILE_BATCH_IMAGES)
   }
 
+  append(imageUris: string[]): void {
+    const next: string[] = this.selectedUris.slice()
+    imageUris.forEach((uri: string) => {
+      if (next.length < MAX_MOBILE_BATCH_IMAGES && next.indexOf(uri) < 0) {
+        next.push(uri)
+      }
+    })
+    this.selectedUris = next
+  }
+
+  removeSelected(index: number): void {
+    if (index < 0 || index >= this.selectedUris.length) return
+    this.selectedUris = this.selectedUris.slice(0, index).concat(this.selectedUris.slice(index + 1))
+  }
+
+  remainingCapacity(): number {
+    return Math.max(0, MAX_MOBILE_BATCH_IMAGES - this.selectedUris.length)
+  }
+
   clearSelection(): void {
     this.selectedUris = []
   }

@@ -9,12 +9,27 @@ export interface StoredSettings {
   apiKey: string
   activeJobIds: string[]
   activeBatchJobId: string
+  activeDocumentId: string
+  activeDocumentJobId: string
   authToken: string
   lastUsername: string
   lastAccountType: string
   rememberPassword: boolean
   autoLogin: boolean
   rememberedUsernames: string[]
+}
+
+export interface StoredDocumentTask {
+  documentId: string
+  jobId: string
+}
+
+export function normalizeStoredDocumentTask(documentId: string, jobId: string): StoredDocumentTask {
+  const normalizedDocumentId: string = documentId.trim()
+  return {
+    documentId: normalizedDocumentId,
+    jobId: normalizedDocumentId.length === 0 ? '' : jobId.trim()
+  }
 }
 
 export function normalizeStoredJobIds(jobIds: string[], legacyJobId: string = ''): string[] {
@@ -37,6 +52,8 @@ export class SettingsStore {
   // Kept only for one-time migration from the previous single-task version.
   private static readonly ACTIVE_JOB_KEY: string = 'active_job_id'
   private static readonly ACTIVE_BATCH_JOB_KEY: string = 'active_batch_job_id'
+  private static readonly ACTIVE_DOCUMENT_ID_KEY: string = 'active_document_id'
+  private static readonly ACTIVE_DOCUMENT_JOB_KEY: string = 'active_document_job_id'
   private static readonly AUTH_TOKEN_KEY: string = 'auth_token'
   private static readonly LAST_USERNAME_KEY: string = 'last_username'
   private static readonly LAST_ACCOUNT_TYPE_KEY: string = 'last_account_type'
@@ -73,11 +90,17 @@ export class SettingsStore {
       await store.delete(SettingsStore.ACTIVE_JOB_KEY)
       await store.flush()
     }
+    const activeDocumentTask: StoredDocumentTask = normalizeStoredDocumentTask(
+      await store.get(SettingsStore.ACTIVE_DOCUMENT_ID_KEY, '') as string,
+      await store.get(SettingsStore.ACTIVE_DOCUMENT_JOB_KEY, '') as string
+    )
     return {
       apiBaseUrl: await store.get(SettingsStore.BASE_URL_KEY, DEFAULT_API_BASE_URL) as string,
       apiKey: apiKey,
       activeJobIds: activeJobIds,
       activeBatchJobId: await store.get(SettingsStore.ACTIVE_BATCH_JOB_KEY, '') as string,
+      activeDocumentId: activeDocumentTask.documentId,
+      activeDocumentJobId: activeDocumentTask.jobId,
       authToken: authToken,
       lastUsername: await store.get(SettingsStore.LAST_USERNAME_KEY, '') as string,
       lastAccountType: await store.get(SettingsStore.LAST_ACCOUNT_TYPE_KEY, 'developer') as string,
@@ -110,6 +133,14 @@ export class SettingsStore {
   static async saveActiveBatchJob(context: Context, jobId: string): Promise<void> {
     const store = await preferences.getPreferences(context, SettingsStore.STORE_NAME)
     await store.put(SettingsStore.ACTIVE_BATCH_JOB_KEY, jobId.trim())
+    await store.flush()
+  }
+
+  static async saveActiveDocumentTask(context: Context, documentId: string, jobId: string): Promise<void> {
+    const store = await preferences.getPreferences(context, SettingsStore.STORE_NAME)
+    const task: StoredDocumentTask = normalizeStoredDocumentTask(documentId, jobId)
+    await store.put(SettingsStore.ACTIVE_DOCUMENT_ID_KEY, task.documentId)
+    await store.put(SettingsStore.ACTIVE_DOCUMENT_JOB_KEY, task.jobId)
     await store.flush()
   }
 

@@ -1,5 +1,6 @@
 import { UserProfile } from '../model/VisionResult'
 import { TEAM_ROLE_OPTIONS } from '../model/TeamRoles'
+import { ConnectionSetupCard } from './ConnectionSetupCard'
 import { ProfileAvatar } from './PageChrome'
 
 @Component
@@ -22,7 +23,6 @@ export struct AuthView {
   @Prop autoLogin: boolean = false
   @Prop autoLoginBusy: boolean = false
   @Prop rememberedUsernames: string[] = []
-  @State serviceExpanded: boolean = false
   onSubmit: () => void = () => {}
   onAuthModeChanged: (value: string) => void = (_value: string) => {}
   onAccountTypeChanged: (value: string) => void = (_value: string) => {}
@@ -236,55 +236,13 @@ export struct AuthView {
               .onClick(this.onSubmit)
               .accessibilityText(this.authMode === 'register' ? '注册并进入工作台' : '登录工作台')
 
-            Column({ space: 10 }) {
-              Row({ space: 8 }) {
-                Text('⚗').fontSize(20).fontColor($r('app.color.primary'))
-                Column({ space: 2 }) {
-                  Text(this.accountType === 'developer' ? '本地实验室服务' : '本地识别服务')
-                    .fontSize(14).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-                  Text(this.accountType === 'developer' ?
-                    (this.apiBaseUrl.length > 0 ? this.apiBaseUrl : '尚未配置') :
-                    (this.serviceSummary.startsWith('已连接') ? '服务可用' : '服务暂不可用'))
-                    .fontSize(10).fontColor($r('app.color.text_secondary')).maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-                if (this.accountType === 'developer') {
-                  Text(this.serviceExpanded ? '收起' : '配置')
-                    .fontSize(12).fontColor($r('app.color.primary'))
-                }
-              }
-              .width('100%')
-              .height(38)
-              .onClick(() => {
-                if (this.accountType === 'developer') this.serviceExpanded = !this.serviceExpanded
-              })
-              .accessibilityText(this.accountType === 'developer' ?
-                (this.serviceExpanded ? '收起服务配置' : '展开服务配置') : '识别服务状态')
-              if (this.accountType === 'developer' && (this.serviceExpanded || this.apiKey.length === 0)) {
-                TextInput({ text: this.apiBaseUrl, placeholder: '电脑服务地址' })
-                  .width('100%').height(44)
-                  .backgroundColor($r('app.color.surface'))
-                  .onChange((value: string) => this.onApiBaseUrlChanged(value))
-                TextInput({ text: this.apiKey, placeholder: '电脑启动命令中的 API 密钥' })
-                  .width('100%').height(44)
-                  .backgroundColor($r('app.color.surface'))
-                  .type(InputType.Password)
-                  .onChange((value: string) => this.onApiKeyChanged(value))
-              }
-              if (this.accountType === 'developer' && this.serviceSummary.length > 0) {
-                Text(this.serviceSummary).fontSize(11)
-                  .fontColor(this.serviceSummary.startsWith('已连接') ?
-                    $r('app.color.success') : $r('app.color.warning')).width('100%')
-              }
-            }
-            .alignItems(HorizontalAlign.Start)
-            .width('100%')
-            .padding({ left: 10, right: 10, top: 4, bottom: 8 })
-            .backgroundColor($r('app.color.primary_faint'))
-            .border({ width: 1, color: $r('app.color.border') })
-            .borderRadius(14)
+            ConnectionSetupCard({
+              apiBaseUrl: this.apiBaseUrl,
+              apiKey: this.apiKey,
+              serviceSummary: this.serviceSummary,
+              onApiBaseUrlChanged: this.onApiBaseUrlChanged,
+              onApiKeyChanged: this.onApiKeyChanged
+            })
           }
           .alignItems(HorizontalAlign.Start)
           .width('100%')

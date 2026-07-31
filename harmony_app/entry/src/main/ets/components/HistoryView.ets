@@ -19,6 +19,7 @@ export struct HistoryView {
   @Prop loadingMore: boolean = false
   @Prop errorMessage: string = ''
   @Prop hasMore: boolean = false
+  @State expandedAnalysisId: string = ''
   onOpenSettings: () => void = () => {}
   onOpenGuide: () => void = () => {}
   onReload: (reset: boolean) => void = (_reset: boolean) => {}
@@ -58,6 +59,14 @@ export struct HistoryView {
   private analysisTone(item: HistoryItem): string {
     if (item.status !== 'success') return 'danger'
     return item.decision === 'rejected' ? 'warning' : 'success'
+  }
+
+  private isExpanded(item: HistoryItem): boolean {
+    return this.expandedAnalysisId === item.analysisId
+  }
+
+  private toggleExpanded(item: HistoryItem): void {
+    this.expandedAnalysisId = this.isExpanded(item) ? '' : item.analysisId
   }
 
   private pillForeground(tone: string): ResourceColor {
@@ -164,26 +173,34 @@ export struct HistoryView {
       }
       Text(item.smiles.length > 0 ? item.smiles : '无有效 SMILES')
         .fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
-        .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+        .maxLines(this.isExpanded(item) ? 2 : 1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
       Row({ space: 8 }) {
         Text(item.createdBy === null ? '历史数据' :
           (item.createdBy.role.length > 0 ? `${item.createdBy.displayName} · ${item.createdBy.role}` : item.createdBy.displayName))
           .fontSize(12).fontColor(item.createdBy === null ? $r('app.color.text_tertiary') : $r('app.color.primary'))
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
         Text(formatReportTime(item.createdAt))
-          .fontSize(11).fontColor($r('app.color.text_tertiary')).maxLines(1).width(138)
+          .fontSize(11).fontColor($r('app.color.text_tertiary')).maxLines(1).width(112)
           .textAlign(TextAlign.End)
+        Text(this.isExpanded(item) ? '收起' : '详情')
+          .fontSize(11).fontWeight(FontWeight.Medium).fontColor($r('app.color.primary'))
+          .width(36).height(28).textAlign(TextAlign.Center)
+          .onClick(() => this.toggleExpanded(item))
+          .accessibilityText(this.isExpanded(item) ? '收起历史记录操作' : '展开历史记录操作')
       }
       .width('100%')
-      Row({ space: 10 }) {
-        Button('查看报告').height(44).layoutWeight(1)
-          .fontColor($r('app.color.text_on_primary')).backgroundColor($r('app.color.primary'))
-          .onClick(() => this.onOpenResult(item.analysisId))
-        Button('移除索引').height(44).layoutWeight(1)
-          .backgroundColor($r('app.color.danger_soft')).fontColor($r('app.color.danger'))
-          .onClick(() => this.onDelete(item))
+      if (this.isExpanded(item)) {
+        Row({ space: 10 }) {
+          Button('查看报告').height(44).layoutWeight(1)
+            .fontColor($r('app.color.text_on_primary')).backgroundColor($r('app.color.primary'))
+            .onClick(() => this.onOpenResult(item.analysisId))
+          Button('从历史删除').height(44).layoutWeight(1)
+            .backgroundColor($r('app.color.danger_soft')).fontColor($r('app.color.danger'))
+            .onClick(() => this.onDelete(item))
+        }
+        .width('100%')
       }
-      .width('100%')
     }
     .alignItems(HorizontalAlign.Start).width('100%').padding(15)
     .backgroundColor($r('app.color.surface'))
