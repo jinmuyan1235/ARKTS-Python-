@@ -16,6 +16,8 @@ def test_regular_ci_matrix_compiles_and_runs_pytest_without_real_model_installer
     assert 'python-version: ["3.10", "3.11"]' in source
     assert "python -m compileall src scripts tests" in source
     assert "python -m pytest -q" in source
+    assert "backend/requirements-api.txt" in source
+    assert "python -m pip install -r requirements-api.txt" in source
     assert "requirements-decimer.txt" not in source
     assert "download_ocsr_models.py" not in source
     assert "MolScribe" not in source
