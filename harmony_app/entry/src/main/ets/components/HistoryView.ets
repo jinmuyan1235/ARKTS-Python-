@@ -86,7 +86,7 @@ export struct HistoryView {
   }
 
   @Builder
-  private historyPill(symbol: string, label: string, tone: string, width: number) {
+  private historyPill(symbol: string, label: string, tone: string) {
     Row({ space: 4 }) {
       Text(symbol)
         .width(13)
@@ -101,7 +101,7 @@ export struct HistoryView {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
-    .width(width)
+    .padding({ left: 8, right: 8 })
     .height(28)
     .justifyContent(FlexAlign.Center)
     .alignItems(VerticalAlign.Center)
@@ -124,7 +124,7 @@ export struct HistoryView {
       .border({ width: 1, color: this.scope === scope && this.ownerUserId === ownerUserId ?
         $r('app.color.primary') : $r('app.color.border') })
       .borderRadius(18)
-      .margin({ right: 6 })
+      .margin({ right: 6, bottom: 6 })
       .stateEffect(true)
       .onClick(() => this.onFiltersChanged(scope, ownerUserId, this.status, this.favoritesOnly))
       .accessibilityText(`${this.scope === scope && this.ownerUserId === ownerUserId ? '已选择' : '选择'}${label}`)
@@ -141,7 +141,7 @@ export struct HistoryView {
       .backgroundColor(this.status === status ? $r('app.color.primary') : $r('app.color.surface_muted'))
       .border({ width: 1, color: this.status === status ? $r('app.color.primary') : $r('app.color.border') })
       .borderRadius(18)
-      .margin({ right: 6 })
+      .margin({ right: 6, bottom: 6 })
       .stateEffect(true)
       .onClick(() => this.onFiltersChanged(this.scope, this.ownerUserId, status, this.favoritesOnly))
       .accessibilityText(`${this.status === status ? '已选择' : '选择'}${label}`)
@@ -151,26 +151,25 @@ export struct HistoryView {
   private historyCard(item: HistoryItem) {
     Column({ space: 9 }) {
       Row() {
-        Row({ space: 6 }) {
-          this.historyPill(item.inputType === 'image' ? '▧' : '⌬',
-            item.inputType === 'image' ? '图片' : 'SMILES', 'primary', 64)
-          this.historyPill(item.status === 'success' && item.decision !== 'rejected' ? '✓' : '!',
-            this.analysisLabel(item), this.analysisTone(item), 74)
-          this.historyPill(item.confirmed ? '✓' : (item.needsReview ? '!' : '·'),
-            this.reviewLabel(item), this.reviewTone(item), 94)
-        }
-        .layoutWeight(1)
+        Text(item.filename.length > 0 ? item.filename : '识别记录')
+          .fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_secondary'))
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
         Text(item.isFavorite ? '★' : '☆')
           .fontSize(25).width(44).height(44).textAlign(TextAlign.Center)
           .fontColor(item.isFavorite ? $r('app.color.favorite') : $r('app.color.text_tertiary'))
           .onClick(() => this.onToggleFavorite(item))
           .accessibilityText(item.isFavorite ? '取消收藏' : '收藏')
       }
-      .width('100%').alignItems(VerticalAlign.Top)
-      if (item.filename.length > 0) {
-        Text(item.filename).fontSize(12).fontColor($r('app.color.text_secondary')).maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+      .width('100%').alignItems(VerticalAlign.Center)
+      Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
+        this.historyPill(item.inputType === 'image' ? '▧' : '⌬',
+          item.inputType === 'image' ? '图片' : 'SMILES', 'primary')
+        this.historyPill(item.status === 'success' && item.decision !== 'rejected' ? '✓' : '!',
+          this.analysisLabel(item), this.analysisTone(item))
+        this.historyPill(item.confirmed ? '✓' : (item.needsReview ? '!' : '·'),
+          this.reviewLabel(item), this.reviewTone(item))
       }
+      .width('100%')
       Text(item.smiles.length > 0 ? item.smiles : '无有效 SMILES')
         .fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
         .maxLines(this.isExpanded(item) ? 2 : 1)

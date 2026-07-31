@@ -1,0 +1,46 @@
+name: HarmonyOS
+
+on:
+  pull_request:
+    paths:
+      - "harmony_app/**"
+      - ".github/workflows/harmony.yml"
+  push:
+    branches: [main]
+    paths:
+      - "harmony_app/**"
+      - ".github/workflows/harmony.yml"
+  workflow_dispatch:
+
+jobs:
+  arkts-test-and-hap:
+    if: github.event_name == 'workflow_dispatch' || vars.HARMONY_CI_ENABLED == 'true'
+    runs-on: [self-hosted, Windows, X64, harmonyos]
+    defaults:
+      run:
+        working-directory: harmony_app
+    env:
+      DEVECO_SDK_HOME: ${{ vars.DEVECO_SDK_HOME }}
+      JAVA_HOME: ${{ vars.DEVECO_JAVA_HOME }}
+      HVIGORW_JS: ${{ vars.DEVECO_HVIGORW_JS }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate DevEco runner
+        shell: pwsh
+        run: |
+          if (-not $env:DEVECO_SDK_HOME) { throw "DEVECO_SDK_HOME repository variable is required." }
+          if (-not $env:JAVA_HOME) { throw "DEVECO_JAVA_HOME repository variable is required." }
+          if (-not (Test-Path -LiteralPath $env:HVIGORW_JS)) { throw "DEVECO_HVIGORW_JS must point to hvigorw.js." }
+          node --version
+      - name: Run ArkTS tests
+        shell: pwsh
+        run: node "$env:HVIGORW_JS" test --mode module -p product=default -p module=entry@default -p buildMode=test
+      - name: Build unsigned HAP
+        shell: pwsh
+        run: node "$env:HVIGORW_JS" assembleHap --mode module -p product=default -p module=entry@default -p buildMode=debug --no-daemon
+      - name: Upload HAP
+        uses: actions/upload-artifact@v4
+        with:
+          name: molecule-vision-hap
+          path: harmony_app/entry/build/default/outputs/default/*.hap
+          if-no-files-found: error

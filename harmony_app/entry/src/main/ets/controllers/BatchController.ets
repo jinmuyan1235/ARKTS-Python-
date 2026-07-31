@@ -39,6 +39,11 @@ export class BatchController {
     this.selectedUris = this.selectedUris.slice(0, index).concat(this.selectedUris.slice(index + 1))
   }
 
+  removeSelectedUris(uris: string[]): void {
+    if (uris.length === 0) return
+    this.selectedUris = this.selectedUris.filter((uri: string) => uris.indexOf(uri) < 0)
+  }
+
   remainingCapacity(): number {
     return Math.max(0, MAX_MOBILE_BATCH_IMAGES - this.selectedUris.length)
   }
@@ -57,6 +62,12 @@ export class BatchController {
     this.job = job
     this.activeJobId = job.jobId
     this.errorMessage = ''
+  }
+
+  invalidateMissing(message: string): void {
+    this.job = undefined
+    this.activeJobId = ''
+    this.errorMessage = message
   }
 
   pendingJobId(): string {

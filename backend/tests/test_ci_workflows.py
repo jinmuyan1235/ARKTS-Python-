@@ -43,3 +43,13 @@ def test_manual_gpu_workflow_is_dispatch_only_and_uploads_diagnostics() -> None:
     assert "molscribe_health.json" in source
     assert "decimer_health.json" in source
     assert "ensemble_smoke.json" in source
+
+
+def test_harmony_workflow_runs_arkts_tests_and_builds_hap_on_deveco_runner() -> None:
+    source = _workflow("harmony.yml")
+
+    assert "runs-on: [self-hosted, Windows, X64, harmonyos]" in source
+    assert "HARMONY_CI_ENABLED" in source
+    assert 'node "$env:HVIGORW_JS" test' in source
+    assert 'node "$env:HVIGORW_JS" assembleHap' in source
+    assert "actions/upload-artifact@v4" in source

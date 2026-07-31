@@ -1,13 +1,15 @@
 import promptAction from '@ohos.promptAction'
 import router from '@ohos.router'
 import { DocumentJob, DocumentRegionInfo, DocumentResult } from '../model/DocumentResult'
-import { ApiClient } from '../services/ApiClient'
+import { ApiClient, ApiError, isTransportError, isUnauthorizedError } from '../services/ApiClient'
 import { DocumentApi } from '../services/DocumentApi'
 import { SettingsStore, StoredSettings } from '../services/SettingsStore'
 import { userFacingError } from '../services/AppUtils'
 import { moveRegionBox, normalizeRegionBox, RegionBox, resizeRegionBox } from '../services/RegionGeometry'
 import { AppErrorState, LoadingSkeleton, MoleculeBackdrop, StatusPill } from '../components/CommonStates'
 import { showDangerConfirmation } from '../services/ConfirmAction'
+import { isActiveTaskStatus, regionDraftSignature } from '../services/DocumentReviewState'
+import { editingTouchTarget } from '../services/MobileLayout'
 
 interface DocumentReviewParams {
   documentId: string
@@ -42,6 +44,8 @@ struct DocumentRegionReview {
   @State previewHeight: number = 280
   private gestureStartBox: RegionBox = { x1: 0, y1: 0, x2: 1, y2: 1 }
   private recognitionJobId: string = ''
+  private recognitionRegionId: string = ''
+  private savedDraftSignature: string = ''
   private pollTimer: number = -1
 
   aboutToAppear(): void {
@@ -61,6 +65,7 @@ struct DocumentRegionReview {
       this.apiKey = settings.apiKey
       ApiClient.setSessionToken(settings.authToken)
       await this.loadDocument()
+      await this.restoreRecognitionTask(settings)
     } catch (error) {
       this.errorMessage = userFacingError(error as Object, '加载区域审核页面失败。')
     } finally {
@@ -79,6 +84,38 @@ struct DocumentRegionReview {
       this.selectedIndex = keptIndex >= 0 ? keptIndex : (moleculeIndex >= 0 ? moleculeIndex : 0)
       this.syncForm(this.document.regions[this.selectedIndex])
     }
+  }
+
+  private async restoreRecognitionTask(settings: StoredSettings): Promise<void> {
+    if (this.document === undefined) return
+    let regionId: string = ''
+    let jobId: string = ''
+    if (settings.activeRegionDocumentId === this.documentId &&
+      settings.activeRegionId.length > 0 && settings.activeRegionJobId.length > 0) {
+      regionId = settings.activeRegionId
+      jobId = settings.activeRegionJobId
+    } else {
+      const activeRegion = this.document.regions.find((region: DocumentRegionInfo) =>
+        region.recognitionJobId.length > 0 && region.analysisId.length === 0)
+      if (activeRegion !== undefined) {
+        regionId = activeRegion.regionId
+        jobId = activeRegion.recognitionJobId
+      }
+    }
+    if (regionId.length === 0 || jobId.length === 0) return
+    const regionIndex: number = this.document.regions.findIndex((region: DocumentRegionInfo) =>
+      region.regionId === regionId)
+    if (regionIndex < 0) {
+      await SettingsStore.saveActiveRegionTask(getContext(this), '', '', '')
+      return
+    }
+    this.selectRegionNow(regionIndex)
+    this.recognitionRegionId = regionId
+    this.recognitionJobId = jobId
+    this.recognizing = true
+    this.recognitionStatus = 'restoring'
+    this.recognitionMessage = '正在恢复该区域未完成的识别任务…'
+    this.startPolling()
   }
 
   private visibleIndices(): number[] {
@@ -108,18 +145,20 @@ struct DocumentRegionReview {
     return '未知'
   }
 
-  private changeFilter(filter: string): void {
+  private async changeFilter(filter: string): Promise<void> {
+    if (!(await this.prepareRegionTransition())) return
     this.regionFilter = filter
     const indices: number[] = this.visibleIndices()
-    if (indices.length > 0 && indices.indexOf(this.selectedIndex) < 0) this.selectRegion(indices[0])
+    if (indices.length > 0 && indices.indexOf(this.selectedIndex) < 0) this.selectRegionNow(indices[0])
   }
 
-  private moveRegion(offset: number): void {
+  private async moveRegion(offset: number): Promise<void> {
     const indices: number[] = this.visibleIndices()
     if (indices.length === 0) return
     const current: number = indices.indexOf(this.selectedIndex)
     const next: number = Math.max(0, Math.min(indices.length - 1, (current < 0 ? 0 : current) + offset))
-    this.selectRegion(indices[next])
+    if (indices[next] === this.selectedIndex || !(await this.prepareRegionTransition())) return
+    this.selectRegionNow(indices[next])
   }
 
   private regionPosition(): string {
@@ -137,14 +176,48 @@ struct DocumentRegionReview {
     this.confirmed = region.confirmed
     this.note = ''
     this.recognitionMessage = region.message
+    this.savedDraftSignature = this.draftSignature()
   }
 
-  private selectRegion(index: number): void {
+  private selectRegionNow(index: number): void {
     if (this.document === undefined || index < 0 || index >= this.document.regions.length) {
       return
     }
     this.selectedIndex = index
     this.syncForm(this.document.regions[index])
+  }
+
+  private draftSignature(): string {
+    return regionDraftSignature({
+      bbox: [Number(this.x1), Number(this.y1), Number(this.x2), Number(this.y2)],
+      regionType: this.regionType,
+      confirmed: this.confirmed,
+      note: this.note
+    })
+  }
+
+  private hasUnsavedChanges(): boolean {
+    return this.currentRegion() !== undefined && this.draftSignature() !== this.savedDraftSignature
+  }
+
+  private async prepareRegionTransition(): Promise<boolean> {
+    if (this.recognizing) {
+      await promptAction.openToast({ message: '当前区域正在识别，请暂停、终止或等待完成后再切换。' })
+      return false
+    }
+    if (!this.hasUnsavedChanges()) return true
+    return this.saveRegion(false)
+  }
+
+  private async leavePage(): Promise<void> {
+    if (this.saving) return
+    if (this.hasUnsavedChanges() && !(await this.saveRegion(false))) return
+    router.back()
+  }
+
+  onBackPress(): boolean {
+    this.leavePage()
+    return true
   }
 
   private currentRegion(): DocumentRegionInfo | undefined {
@@ -203,6 +276,7 @@ struct DocumentRegionReview {
   }
 
   private beginBoxGesture(): void {
+    if (this.recognizing) return
     this.gestureStartBox = this.draftBox()
   }
 
@@ -222,6 +296,7 @@ struct DocumentRegionReview {
   }
 
   private updateDraftCoordinate(index: number, value: number): void {
+    if (this.recognizing) return
     const box: RegionBox = this.draftBox()
     const region = this.currentRegion()
     if (region === undefined) return
@@ -259,6 +334,7 @@ struct DocumentRegionReview {
         .trackColor($r('app.color.surface_muted'))
         .blockColor($r('app.color.primary'))
         .trackThickness(4)
+        .enabled(!this.recognizing)
         .onChange((value: number) => this.updateDraftCoordinate(index, value))
       Text(`${Math.round(this.coordinateValue(index))}`)
         .fontSize(10).fontColor($r('app.color.text_secondary')).width(44).textAlign(TextAlign.End)
@@ -268,14 +344,14 @@ struct DocumentRegionReview {
 
   private moveDraftBox(event: GestureEvent): void {
     const region = this.currentRegion()
-    if (region === undefined || this.isScrollAxisEvent(event)) return
+    if (region === undefined || this.recognizing || this.isScrollAxisEvent(event)) return
     this.applyBox(moveRegionBox(this.gestureStartBox, event.offsetX, event.offsetY,
       this.previewWidth, this.previewHeight, this.currentPageWidth(region), this.currentPageHeight(region)))
   }
 
   private resizeDraftBox(event: GestureEvent): void {
     const region = this.currentRegion()
-    if (region === undefined || this.isScrollAxisEvent(event)) return
+    if (region === undefined || this.recognizing || this.isScrollAxisEvent(event)) return
     this.applyBox(resizeRegionBox(this.gestureStartBox, event.offsetX, event.offsetY,
       this.previewWidth, this.previewHeight, this.currentPageWidth(region), this.currentPageHeight(region)))
   }
@@ -345,8 +421,11 @@ struct DocumentRegionReview {
         this.apiBaseUrl, this.apiKey, this.documentId, current.regionId, this.note
       )
       this.recognitionJobId = job.jobId
+      this.recognitionRegionId = current.regionId
       this.recognitionStatus = job.status
       this.recognitionMessage = job.message
+      await SettingsStore.saveActiveRegionTask(
+        getContext(this), this.documentId, this.recognitionRegionId, this.recognitionJobId)
       this.startPolling()
     } catch (error) {
       this.recognizing = false
@@ -378,12 +457,29 @@ struct DocumentRegionReview {
       if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
         this.stopPolling()
         this.recognizing = false
+        this.recognitionJobId = ''
+        this.recognitionRegionId = ''
+        await SettingsStore.saveActiveRegionTask(getContext(this), '', '', '')
         await this.loadDocument()
       }
     } catch (error) {
-      this.stopPolling()
-      this.recognizing = false
-      this.recognitionMessage = userFacingError(error as Object, '查询区域识别任务失败。')
+      if (error instanceof ApiError && error.statusCode === 404) {
+        this.stopPolling()
+        this.recognizing = false
+        this.recognitionStatus = 'missing'
+        this.recognitionMessage = '该区域任务已被电脑端清理，可重新提交识别。'
+        this.recognitionJobId = ''
+        this.recognitionRegionId = ''
+        await SettingsStore.saveActiveRegionTask(getContext(this), '', '', '')
+      } else if (isUnauthorizedError(error as Object)) {
+        this.stopPolling()
+        this.recognitionStatus = 'auth_required'
+        this.recognitionMessage = '登录已失效，任务记录仍保留；重新登录后会继续恢复。'
+      } else {
+        this.recognitionStatus = 'network_wait'
+        this.recognitionMessage = isTransportError(error as Object) ?
+          '连接暂时中断，正在保留任务并等待网络恢复…' : '暂时无法查询任务，稍后自动重试。'
+      }
     }
   }
 
@@ -403,6 +499,9 @@ struct DocumentRegionReview {
       if (job.status === 'cancelled') {
         this.recognizing = false
         this.stopPolling()
+        this.recognitionJobId = ''
+        this.recognitionRegionId = ''
+        await SettingsStore.saveActiveRegionTask(getContext(this), '', '', '')
       } else {
         this.startPolling()
       }
@@ -421,7 +520,7 @@ struct DocumentRegionReview {
 
   private async saveAndNext(): Promise<void> {
     if (await this.saveRegion(false)) {
-      this.moveRegion(1)
+      await this.moveRegion(1)
       await promptAction.openToast({ message: '已保存，进入下一项。' })
     }
   }
@@ -445,7 +544,7 @@ struct DocumentRegionReview {
           Text('没有可审核区域').fontSize(18).fontWeight(FontWeight.Medium)
           Text('请返回文档识别页重新检测，或换用更清晰的文档。').fontSize(13)
             .fontColor($r('app.color.text_secondary'))
-          Button('返回').onClick(() => router.back())
+          Button('返回').onClick(() => this.leavePage())
         }
         .justifyContent(FlexAlign.Center).width('100%').height('100%')
       } else {
@@ -453,7 +552,7 @@ struct DocumentRegionReview {
           Column({ space: 14 }) {
             Row({ space: 10 }) {
               Button('‹').width(44).height(44).backgroundColor($r('app.color.primary_soft'))
-                .fontColor($r('app.color.primary')).onClick(() => router.back())
+                .fontColor($r('app.color.primary')).onClick(() => this.leavePage())
               Column({ space: 2 }) {
                 Text('区域审核').fontSize(22).fontWeight(FontWeight.Bold).fontColor($r('app.color.text_primary'))
                 Text(`${this.document.filename} · ${this.document.regionCount} 个候选区域`)
@@ -473,15 +572,18 @@ struct DocumentRegionReview {
                     .padding({ top: 10, bottom: 10 })
                     .backgroundColor(this.regionFilter === filter ?
                       $r('app.color.primary') : $r('app.color.surface_soft'))
-                    .borderRadius(16).onClick(() => this.changeFilter(filter))
+                    .borderRadius(16).enabled(!this.saving && !this.recognizing)
+                    .onClick(() => this.changeFilter(filter))
                 })
               }.width('100%')
               Row({ space: 10 }) {
                 Button('上一项').layoutWeight(1).height(42).onClick(() => this.moveRegion(-1))
+                  .enabled(!this.saving && !this.recognizing)
                   .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
                 Text(this.regionPosition()).fontSize(14).fontWeight(FontWeight.Medium)
                   .fontColor($r('app.color.text_primary')).textAlign(TextAlign.Center).width(72)
                 Button('下一项').layoutWeight(1).height(42).onClick(() => this.moveRegion(1))
+                  .enabled(!this.saving && !this.recognizing)
                   .fontColor($r('app.color.primary')).backgroundColor($r('app.color.primary_soft'))
               }.width('100%')
             }
@@ -501,39 +603,37 @@ struct DocumentRegionReview {
                       .height('100%')
                       .backgroundColor('#18F5A623')
                       .gesture(
-                        PanGesture({ direction: PanDirection.All, distance: 1 })
+                        PanGesture({ direction: PanDirection.All, distance: 8 })
                           .onActionStart(() => this.beginBoxGesture())
                           .onActionUpdate((event: GestureEvent) => this.moveDraftBox(event))
                       )
                       .accessibilityText('拖动识别框内部可移动位置')
                     Text('✥')
-                      .width(18)
-                      .height(18)
-                      .fontSize(11)
+                      .width(editingTouchTarget())
+                      .height(editingTouchTarget())
+                      .fontSize(13)
                       .fontWeight(FontWeight.Bold)
-                      .fontColor($r('app.color.text_on_primary'))
+                      .fontColor($r('app.color.primary'))
                       .textAlign(TextAlign.Center)
-                      .backgroundColor($r('app.color.primary'))
-                      .borderRadius(9)
+                      .backgroundColor(Color.Transparent)
                       .align(Alignment.TopStart)
                       .gesture(
-                        PanGesture({ direction: PanDirection.All })
+                        PanGesture({ direction: PanDirection.All, distance: 5 })
                           .onActionStart(() => this.beginBoxGesture())
                           .onActionUpdate((event: GestureEvent) => this.moveDraftBox(event))
                       )
                       .accessibilityText('拖动移动识别框')
                     Text('◢')
-                      .width(18)
-                      .height(18)
-                      .fontSize(9)
+                      .width(editingTouchTarget())
+                      .height(editingTouchTarget())
+                      .fontSize(13)
                       .fontWeight(FontWeight.Bold)
-                      .fontColor($r('app.color.text_on_primary'))
+                      .fontColor($r('app.color.warning'))
                       .textAlign(TextAlign.Center)
-                      .backgroundColor($r('app.color.warning'))
-                      .borderRadius(9)
+                      .backgroundColor(Color.Transparent)
                       .align(Alignment.BottomEnd)
                       .gesture(
-                        PanGesture({ direction: PanDirection.All })
+                        PanGesture({ direction: PanDirection.All, distance: 5 })
                           .onActionStart(() => this.beginBoxGesture())
                           .onActionUpdate((event: GestureEvent) => this.resizeDraftBox(event))
                       )
@@ -592,7 +692,7 @@ struct DocumentRegionReview {
                         .fontColor(this.regionType === type ? $r('app.color.text_on_primary') : $r('app.color.text_primary'))
                         .padding({ left: 12, right: 12, top: 9, bottom: 9 })
                         .backgroundColor(this.regionType === type ? $r('app.color.primary') : $r('app.color.surface_soft'))
-                        .borderRadius(16).onClick(() => this.regionType = type)
+                        .borderRadius(16).enabled(!this.recognizing).onClick(() => this.regionType = type)
                     })
                   }
                 }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
@@ -604,10 +704,11 @@ struct DocumentRegionReview {
                       .fontColor($r('app.color.text_secondary'))
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1)
                   Toggle({ type: ToggleType.Switch, isOn: this.confirmed })
+                    .enabled(!this.recognizing)
                     .onChange(value => this.confirmed = value)
                 }.width('100%')
                 TextInput({ text: this.note, placeholder: '审核备注（可选）' })
-                  .onChange(value => this.note = value).width('100%')
+                  .enabled(!this.recognizing).onChange(value => this.note = value).width('100%')
 
                 if (this.regionType === 'reaction_like') {
                   Row({ space: 8 }) {

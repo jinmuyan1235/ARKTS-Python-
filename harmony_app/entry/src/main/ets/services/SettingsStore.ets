@@ -2,7 +2,7 @@ import preferences from '@ohos.data.preferences'
 import { SecureStore } from './SecureStore'
 import { planSensitiveMigration, SensitiveMigrationPlan } from './AppUtils'
 
-export const DEFAULT_API_BASE_URL: string = 'http://192.168.5.13:8000'
+export const DEFAULT_API_BASE_URL: string = ''
 
 export interface StoredSettings {
   apiBaseUrl: string
@@ -11,6 +11,9 @@ export interface StoredSettings {
   activeBatchJobId: string
   activeDocumentId: string
   activeDocumentJobId: string
+  activeRegionDocumentId: string
+  activeRegionId: string
+  activeRegionJobId: string
   authToken: string
   lastUsername: string
   lastAccountType: string
@@ -24,11 +27,27 @@ export interface StoredDocumentTask {
   jobId: string
 }
 
+export interface StoredRegionTask {
+  documentId: string
+  regionId: string
+  jobId: string
+}
+
 export function normalizeStoredDocumentTask(documentId: string, jobId: string): StoredDocumentTask {
   const normalizedDocumentId: string = documentId.trim()
   return {
     documentId: normalizedDocumentId,
     jobId: normalizedDocumentId.length === 0 ? '' : jobId.trim()
+  }
+}
+
+export function normalizeStoredRegionTask(documentId: string, regionId: string, jobId: string): StoredRegionTask {
+  const normalizedDocumentId: string = documentId.trim()
+  const normalizedRegionId: string = regionId.trim()
+  return {
+    documentId: normalizedDocumentId,
+    regionId: normalizedDocumentId.length === 0 ? '' : normalizedRegionId,
+    jobId: normalizedDocumentId.length === 0 || normalizedRegionId.length === 0 ? '' : jobId.trim()
   }
 }
 
@@ -54,6 +73,9 @@ export class SettingsStore {
   private static readonly ACTIVE_BATCH_JOB_KEY: string = 'active_batch_job_id'
   private static readonly ACTIVE_DOCUMENT_ID_KEY: string = 'active_document_id'
   private static readonly ACTIVE_DOCUMENT_JOB_KEY: string = 'active_document_job_id'
+  private static readonly ACTIVE_REGION_DOCUMENT_KEY: string = 'active_region_document_id'
+  private static readonly ACTIVE_REGION_ID_KEY: string = 'active_region_id'
+  private static readonly ACTIVE_REGION_JOB_KEY: string = 'active_region_job_id'
   private static readonly AUTH_TOKEN_KEY: string = 'auth_token'
   private static readonly LAST_USERNAME_KEY: string = 'last_username'
   private static readonly LAST_ACCOUNT_TYPE_KEY: string = 'last_account_type'
@@ -94,6 +116,11 @@ export class SettingsStore {
       await store.get(SettingsStore.ACTIVE_DOCUMENT_ID_KEY, '') as string,
       await store.get(SettingsStore.ACTIVE_DOCUMENT_JOB_KEY, '') as string
     )
+    const activeRegionTask: StoredRegionTask = normalizeStoredRegionTask(
+      await store.get(SettingsStore.ACTIVE_REGION_DOCUMENT_KEY, '') as string,
+      await store.get(SettingsStore.ACTIVE_REGION_ID_KEY, '') as string,
+      await store.get(SettingsStore.ACTIVE_REGION_JOB_KEY, '') as string
+    )
     return {
       apiBaseUrl: await store.get(SettingsStore.BASE_URL_KEY, DEFAULT_API_BASE_URL) as string,
       apiKey: apiKey,
@@ -101,9 +128,12 @@ export class SettingsStore {
       activeBatchJobId: await store.get(SettingsStore.ACTIVE_BATCH_JOB_KEY, '') as string,
       activeDocumentId: activeDocumentTask.documentId,
       activeDocumentJobId: activeDocumentTask.jobId,
+      activeRegionDocumentId: activeRegionTask.documentId,
+      activeRegionId: activeRegionTask.regionId,
+      activeRegionJobId: activeRegionTask.jobId,
       authToken: authToken,
       lastUsername: await store.get(SettingsStore.LAST_USERNAME_KEY, '') as string,
-      lastAccountType: await store.get(SettingsStore.LAST_ACCOUNT_TYPE_KEY, 'developer') as string,
+      lastAccountType: await store.get(SettingsStore.LAST_ACCOUNT_TYPE_KEY, 'user') as string,
       rememberPassword: await store.get(SettingsStore.REMEMBER_PASSWORD_KEY, false) as boolean,
       autoLogin: await store.get(SettingsStore.AUTO_LOGIN_KEY, false) as boolean,
       rememberedUsernames: SettingsStore.parseStringList(
@@ -141,6 +171,20 @@ export class SettingsStore {
     const task: StoredDocumentTask = normalizeStoredDocumentTask(documentId, jobId)
     await store.put(SettingsStore.ACTIVE_DOCUMENT_ID_KEY, task.documentId)
     await store.put(SettingsStore.ACTIVE_DOCUMENT_JOB_KEY, task.jobId)
+    await store.flush()
+  }
+
+  static async saveActiveRegionTask(
+    context: Context,
+    documentId: string,
+    regionId: string,
+    jobId: string
+  ): Promise<void> {
+    const store = await preferences.getPreferences(context, SettingsStore.STORE_NAME)
+    const task: StoredRegionTask = normalizeStoredRegionTask(documentId, regionId, jobId)
+    await store.put(SettingsStore.ACTIVE_REGION_DOCUMENT_KEY, task.documentId)
+    await store.put(SettingsStore.ACTIVE_REGION_ID_KEY, task.regionId)
+    await store.put(SettingsStore.ACTIVE_REGION_JOB_KEY, task.jobId)
     await store.flush()
   }
 

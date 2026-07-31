@@ -31,8 +31,28 @@ import { HistoryController } from '../main/ets/controllers/HistoryController'
 import { BatchController, isTerminalBatchStatus, MAX_MOBILE_BATCH_IMAGES } from '../main/ets/controllers/BatchController'
 import { batchCategoryLabel, batchPercent } from '../main/ets/components/BatchView'
 import { BatchJob } from '../main/ets/model/BatchResult'
-import { normalizeStoredDocumentTask, normalizeStoredJobIds } from '../main/ets/services/SettingsStore'
+import {
+  DEFAULT_API_BASE_URL,
+  normalizeStoredDocumentTask,
+  normalizeStoredJobIds,
+  normalizeStoredRegionTask
+} from '../main/ets/services/SettingsStore'
 import { moveRegionBox, normalizeRegionBox, RegionBox, resizeRegionBox } from '../main/ets/services/RegionGeometry'
+import {
+  isActiveTaskStatus,
+  regionDraftSignature,
+  taskRecoveryAction
+} from '../main/ets/services/DocumentReviewState'
+import { batchGridColumns, bottomNavigationPercent, editingTouchTarget } from '../main/ets/services/MobileLayout'
+import {
+  cropBoundsForRect,
+  cropRectForAspect,
+  fullCropRect,
+  isUnchangedImageEdit,
+  moveCropRect,
+  normalizedRotationDegrees,
+  resizeCropRect
+} from '../main/ets/services/ImageEditGeometry'
 import { documentUploadInfo } from '../main/ets/services/DocumentApi'
 import { exportFileName, exportManifestPath, exportSizeLabel } from '../main/ets/services/ExportApi'
 import { ExportItem } from '../main/ets/model/ExportResult'
@@ -111,6 +131,10 @@ export default function localUnitTest() {
       controller.append(['file://image-1.png', 'file://new-image.png'])
       expect(controller.selectedUris.length).assertEqual(MAX_MOBILE_BATCH_IMAGES)
       expect(controller.selectedUris[MAX_MOBILE_BATCH_IMAGES - 1]).assertEqual('file://new-image.png')
+      controller.removeSelectedUris(['file://image-2.png', 'file://image-3.png'])
+      expect(controller.selectedUris.indexOf('file://image-2.png')).assertEqual(-1)
+      expect(controller.selectedUris.indexOf('file://image-3.png')).assertEqual(-1)
+      expect(controller.remainingCapacity()).assertEqual(2)
       const job: BatchJob = {
         jobId: 'batch-restored', status: 'running', message: '识别中', backend: 'demo', source: 'upload',
         parentJobId: null, total: 10, completed: 4, progress: 0.4, currentFile: 'image-5.png', currentIndex: 5,
@@ -130,6 +154,10 @@ export default function localUnitTest() {
       expect(controller.pendingJobId()).assertEqual('')
       expect(controller.canRetryFailed()).assertTrue()
       expect(isTerminalBatchStatus('cancelled')).assertTrue()
+      controller.invalidateMissing('任务已清理')
+      expect(controller.job === undefined).assertTrue()
+      expect(controller.activeJobId).assertEqual('')
+      expect(controller.errorMessage).assertEqual('任务已清理')
     })
 
     it('guidesFirstConnectionForEveryAccountType', 0, () => {
@@ -157,6 +185,68 @@ export default function localUnitTest() {
       const cleared = normalizeStoredDocumentTask('', 'orphan-job')
       expect(cleared.documentId).assertEqual('')
       expect(cleared.jobId).assertEqual('')
+      const region = normalizeStoredRegionTask('document-1', 'region-2', 'job-3')
+      expect(region.regionId).assertEqual('region-2')
+      expect(region.jobId).assertEqual('job-3')
+      const orphan = normalizeStoredRegionTask('', 'region-2', 'job-3')
+      expect(orphan.regionId).assertEqual('')
+      expect(orphan.jobId).assertEqual('')
+    })
+
+    it('protectsDocumentDraftsAndClassifiesRecoveryErrors', 0, () => {
+      const saved = regionDraftSignature({
+        bbox: [10.2, 20.4, 100.1, 120.2], regionType: 'molecule', confirmed: false, note: ''
+      })
+      const unchanged = regionDraftSignature({
+        bbox: [10, 20, 100, 120], regionType: 'molecule', confirmed: false, note: ' '
+      })
+      const edited = regionDraftSignature({
+        bbox: [11, 20, 100, 120], regionType: 'molecule', confirmed: true, note: ''
+      })
+      expect(saved).assertEqual(unchanged)
+      expect(saved === edited).assertFalse()
+      expect(isActiveTaskStatus('network_wait')).assertTrue()
+      expect(isActiveTaskStatus('auth_required')).assertTrue()
+      expect(isActiveTaskStatus('completed')).assertFalse()
+      expect(taskRecoveryAction(0, false)).assertEqual('keep')
+      expect(taskRecoveryAction(401, true)).assertEqual('reauthenticate')
+      expect(taskRecoveryAction(404, true)).assertEqual('clear_job')
+      expect(taskRecoveryAction(404, false)).assertEqual('clear_document')
+    })
+
+    it('usesPhoneDefaultsAndResponsiveTouchTargets', 0, () => {
+      expect(DEFAULT_API_BASE_URL).assertEqual('')
+      expect(bottomNavigationPercent(5)).assertEqual(20)
+      expect(bottomNavigationPercent(0)).assertEqual(100)
+      expect(batchGridColumns(320)).assertEqual(2)
+      expect(batchGridColumns(360)).assertEqual(3)
+      expect(editingTouchTarget()).assertLarger(39)
+    })
+
+    it('calculatesSafeInAppCropBounds', 0, () => {
+      const moved = moveCropRect({ left: 0.1, top: 0.1, right: 0.8, bottom: 0.8 }, 0.4, 0.4)
+      expect(moved.right).assertEqual(1)
+      expect(moved.bottom).assertEqual(1)
+      const resized = resizeCropRect(fullCropRect(), 'bottom_right', -0.2, -0.3)
+      expect(resized.right).assertEqual(0.8)
+      expect(resized.bottom).assertEqual(0.7)
+      const square = cropRectForAspect(1000, 800, 1)
+      expect(square.right - square.left < square.bottom - square.top).assertTrue()
+      const bounds = cropBoundsForRect(1000, 800, {
+        left: 0.1, top: 0.1, right: 0.9, bottom: 0.9
+      })
+      expect(bounds.x).assertEqual(100)
+      expect(bounds.y).assertEqual(80)
+      expect(bounds.width).assertEqual(800)
+      expect(bounds.height).assertEqual(640)
+      expect(normalizedRotationDegrees(-90)).assertEqual(270)
+      expect(normalizedRotationDegrees(450)).assertEqual(90)
+      expect(isUnchangedImageEdit({
+        rotationDegrees: 0,
+        flipHorizontal: false,
+        flipVertical: false,
+        crop: fullCropRect()
+      })).assertTrue()
     })
 
     it('normalizesServiceUrls', 0, () => {
