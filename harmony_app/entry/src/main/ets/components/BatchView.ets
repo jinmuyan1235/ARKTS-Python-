@@ -3,6 +3,7 @@ import { UserProfile } from '../model/VisionResult'
 import { MAX_MOBILE_BATCH_IMAGES } from '../controllers/BatchController'
 import { MoleculeBackdrop, SectionHeader, StatusPill } from './CommonStates'
 import { PageHeader } from './PageChrome'
+import { batchGridColumns } from '../services/MobileLayout'
 
 interface BatchMetricItem {
   key: string
@@ -56,12 +57,17 @@ export struct BatchView {
   @Prop controlBusy: boolean = false
   @Prop errorMessage: string = ''
   @Prop builtInImages: string[] = []
+  @State previewUri: string = ''
+  @State managingSelection: boolean = false
+  @State markedUris: string[] = []
+  @State selectionViewportWidth: number = 360
   onOpenSettings: () => void = () => {}
   onOpenGuide: () => void = () => {}
   onChooseImages: () => void = () => {}
   onUseBuiltInImages: () => void = () => {}
   onToggleBuiltInImage: (uri: string) => void = (_uri: string) => {}
   onRemoveSelected: (index: number) => void = (_index: number) => {}
+  onRemoveSelectedUris: (uris: string[]) => void = (_uris: string[]) => {}
   onClearSelection: () => void = () => {}
   onSubmit: () => void = () => {}
   onPause: () => void = () => {}
@@ -70,6 +76,48 @@ export struct BatchView {
   onRetryFailed: () => void = () => {}
   onOpenExports: (jobId: string) => void = (_jobId: string) => {}
   onOpenResult: (analysisId: string) => void = (_analysisId: string) => {}
+
+  private validMarkedUris(): string[] {
+    return this.markedUris.filter((uri: string) => this.selectedUris.indexOf(uri) >= 0)
+  }
+
+  private toggleMarked(uri: string): void {
+    const next: string[] = this.validMarkedUris()
+    const index: number = next.indexOf(uri)
+    if (index >= 0) {
+      next.splice(index, 1)
+    } else {
+      next.push(uri)
+    }
+    this.markedUris = next
+  }
+
+  private toggleManagement(): void {
+    this.managingSelection = !this.managingSelection
+    if (!this.managingSelection) this.markedUris = []
+  }
+
+  private removeMarked(): void {
+    const targets: string[] = this.validMarkedUris()
+    if (targets.length === 0) return
+    if (targets.indexOf(this.previewUri) >= 0) this.previewUri = ''
+    this.onRemoveSelectedUris(targets)
+    this.markedUris = []
+    this.managingSelection = false
+  }
+
+  private removeOne(uri: string, index: number): void {
+    if (this.previewUri === uri) this.previewUri = ''
+    this.onRemoveSelected(index)
+    this.markedUris = this.validMarkedUris().filter((value: string) => value !== uri)
+  }
+
+  private clearAll(): void {
+    this.previewUri = ''
+    this.markedUris = []
+    this.managingSelection = false
+    this.onClearSelection()
+  }
 
   @Builder
   private categoryMetric(label: string, value: number, tone: string) {
@@ -158,37 +206,81 @@ export struct BatchView {
           })
 
           Column({ space: 12 }) {
-            Row() {
+            Row({ space: 8 }) {
               Column() {
                 SectionHeader({ symbol: '▦', title: '图片', caption: '最多 30 张' })
               }.layoutWeight(1)
-              Blank()
               if (this.selectedUris.length > 0) {
+                Button(this.managingSelection ? '完成' : '管理').height(34).fontSize(11)
+                  .backgroundColor($r('app.color.primary_soft')).fontColor($r('app.color.primary'))
+                  .onClick(() => this.toggleManagement())
                 Button('清空').height(34).fontSize(12)
                   .backgroundColor($r('app.color.danger_soft')).fontColor($r('app.color.danger'))
-                  .onClick(this.onClearSelection)
+                  .onClick(() => this.clearAll())
               }
             }.width('100%')
             if (this.selectedUris.length > 0) {
-              Scroll() {
-                Row({ space: 8 }) {
+              if (this.previewUri.length > 0 && this.selectedUris.indexOf(this.previewUri) >= 0) {
+                Column({ space: 8 }) {
+                  Image(this.previewUri).width('100%').height(190).objectFit(ImageFit.Contain)
+                    .backgroundColor($r('app.color.surface_structure')).borderRadius(12)
+                  Row() {
+                    Text(`预览第 ${this.selectedUris.indexOf(this.previewUri) + 1} 张`)
+                      .fontSize(11).fontColor($r('app.color.text_secondary')).layoutWeight(1)
+                    Text('关闭预览').fontSize(11).fontColor($r('app.color.primary'))
+                      .onClick(() => this.previewUri = '')
+                  }.width('100%')
+                }.width('100%')
+              }
+              Grid() {
                   ForEach(this.selectedUris, (uri: string, index: number) => {
-                    Column({ space: 4 }) {
-                      Image(uri).width(72).height(72).objectFit(ImageFit.Cover)
-                        .backgroundColor($r('app.color.surface_structure')).borderRadius(10)
-                      Row() {
-                        Text(`第 ${index + 1} 张`).fontSize(9).fontColor($r('app.color.text_secondary'))
-                        Blank()
-                        Text('移除').fontSize(9).fontWeight(FontWeight.Medium)
-                          .fontColor($r('app.color.danger'))
-                          .onClick(() => this.onRemoveSelected(index))
-                          .accessibilityText(`移除第${index + 1}张已选图片`)
-                      }.width(72).height(20)
+                    GridItem() {
+                      Column({ space: 4 }) {
+                        Stack({ alignContent: Alignment.TopEnd }) {
+                          Image(uri).width('100%').height(72).objectFit(ImageFit.Contain)
+                            .backgroundColor($r('app.color.surface_structure')).borderRadius(9)
+                            .border({ width: this.markedUris.indexOf(uri) >= 0 ? 2 : 1,
+                              color: this.markedUris.indexOf(uri) >= 0 ?
+                                $r('app.color.primary') : $r('app.color.divider') })
+                          Text(this.managingSelection ?
+                            (this.markedUris.indexOf(uri) >= 0 ? '✓' : '○') : `${index + 1}`)
+                            .fontSize(10).fontWeight(FontWeight.Bold)
+                            .fontColor($r('app.color.text_on_primary')).textAlign(TextAlign.Center)
+                            .width(22).height(22).backgroundColor($r('app.color.primary')).borderRadius(11)
+                        }
+                        Row() {
+                          Text(this.managingSelection ? '点选' : '预览')
+                            .fontSize(9).fontColor($r('app.color.text_secondary'))
+                          Blank()
+                          Text('移除').fontSize(9).fontWeight(FontWeight.Medium)
+                            .fontColor($r('app.color.danger'))
+                            .onClick(() => this.removeOne(uri, index))
+                            .accessibilityText(`移除第${index + 1}张已选图片`)
+                        }.width('100%').height(20)
+                      }
+                      .width('100%')
+                      .onClick(() => {
+                        if (this.managingSelection) this.toggleMarked(uri)
+                        else this.previewUri = uri
+                      })
                     }
-                    .width(76).height(98)
                   })
-                }
-              }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+              }
+              .columnsTemplate(batchGridColumns(this.selectionViewportWidth) === 2 ?
+                '1fr 1fr' : '1fr 1fr 1fr')
+              .columnsGap(8).rowsGap(8)
+              .height(Math.min(224, Math.ceil(this.selectedUris.length /
+                batchGridColumns(this.selectionViewportWidth)) * 104))
+              .scrollBar(BarState.Auto).width('100%')
+              .onAreaChange((_oldArea: Area, newArea: Area) => {
+                this.selectionViewportWidth = Number(newArea.width)
+              })
+              if (this.managingSelection) {
+                Button(`移除已选（${this.validMarkedUris().length}）`).width('100%').height(40)
+                  .enabled(this.validMarkedUris().length > 0)
+                  .backgroundColor($r('app.color.danger_soft')).fontColor($r('app.color.danger'))
+                  .onClick(() => this.removeMarked())
+              }
               Text(`已选 ${this.selectedUris.length} 张 · 还可添加 ` +
                 `${Math.max(0, MAX_MOBILE_BATCH_IMAGES - this.selectedUris.length)} 张`)
                 .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
@@ -201,7 +293,7 @@ export struct BatchView {
                 Row({ space: 8 }) {
                   ForEach(this.builtInImages, (uri: string, index: number) => {
                     Stack({ alignContent: Alignment.BottomEnd }) {
-                      Image(uri).width(66).height(58).objectFit(ImageFit.Cover)
+                      Image(uri).width(66).height(58).objectFit(ImageFit.Contain)
                         .backgroundColor($r('app.color.surface_structure')).borderRadius(9)
                         .border({ width: this.selectedUris.indexOf(uri) >= 0 ? 2 : 1,
                           color: this.selectedUris.indexOf(uri) >= 0 ?

@@ -42,6 +42,8 @@ import { HistoryController } from '../controllers/HistoryController'
 import { BuiltInTestFiles, BuiltInTestSet } from '../services/BuiltInTestSet'
 import { SecureStore } from '../services/SecureStore'
 import { showDangerConfirmation } from '../services/ConfirmAction'
+import { ImageEditService } from '../services/ImageEditService'
+import { ImageEditSpec, isUnchangedImageEdit } from '../services/ImageEditGeometry'
 
 @Entry
 @Component
@@ -57,6 +59,7 @@ struct Index {
   @State history: HistoryController = new HistoryController()
   @State serviceHealth: HealthResult | undefined = undefined
   @State builtInImages: string[] = []
+  @State imageEditing: boolean = false
   private pollTimer: number = -1
   private batchPollTimer: number = -1
 
@@ -73,8 +76,8 @@ struct Index {
     if (this.auth.authenticated && this.job.pendingCount() > 0) {
       this.refreshPendingTasks()
     }
-    if (this.auth.authenticated && this.batch.activeJobId.length > 0) {
-      this.refreshBatchJob(true)
+    if (this.auth.authenticated && this.batch.pendingJobId().length > 0) {
+      this.refreshBatchJob()
     }
     if (this.auth.authenticated && this.currentTab === 3) {
       this.loadHistory(true, true)
@@ -555,6 +558,9 @@ struct Index {
       const options = new photoAccessHelper.PhotoSelectOptions()
       options.MIMEType = photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE
       options.maxSelectNumber = 1
+      options.isPhotoTakingSupported = true
+      options.isEditSupported = true
+      options.isPreviewForSingleSelectionSupported = true
       const picker = new photoAccessHelper.PhotoViewPicker()
       const selected = await picker.select(options)
       if (selected.photoUris.length > 0) {
@@ -564,6 +570,29 @@ struct Index {
       }
     } catch (error) {
       await promptAction.openToast({ message: userFacingError(error as Object, '选择图片失败，请重新打开图库。') })
+    }
+  }
+
+  private async applyImageEdits(spec: ImageEditSpec): Promise<void> {
+    if (this.job.imageUri.length === 0 || this.imageEditing) {
+      await promptAction.openToast({ message: '请先选择图片。' })
+      return
+    }
+    if (isUnchangedImageEdit(spec)) {
+      await promptAction.openToast({ message: '图片没有发生变化。' })
+      return
+    }
+    this.imageEditing = true
+    try {
+      this.job.imageUri = await ImageEditService.apply(
+        getContext(this) as common.UIAbilityContext, this.job.imageUri, spec)
+      this.job.completionAnalysisId = ''
+      this.job.completionMessage = ''
+      await promptAction.openToast({ message: '裁剪和旋转结果已应用。' })
+    } catch (error) {
+      await promptAction.openToast({ message: userFacingError(error as Object, '编辑图片失败。') })
+    } finally {
+      this.imageEditing = false
     }
   }
 
@@ -583,6 +612,7 @@ struct Index {
       const options = new photoAccessHelper.PhotoSelectOptions()
       options.MIMEType = photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE
       options.maxSelectNumber = remaining
+      options.isPhotoTakingSupported = true
       const picker = new photoAccessHelper.PhotoViewPicker()
       const selected = await picker.select(options)
       if (selected.photoUris.length > 0) {
@@ -640,7 +670,7 @@ struct Index {
       this.connection.markReachable()
       this.batch.activate(created)
       this.batch.clearSelection()
-      await SettingsStore.saveActiveBatchJob(getContext(this), this.batch.activeJobId)
+      await SettingsStore.saveActiveBatchJob(getContext(this), this.batch.pendingJobId())
       this.startBatchPolling()
       await promptAction.openToast({ message: `已提交 ${created.total} 张图片。` })
     } catch (error) {
@@ -665,8 +695,8 @@ struct Index {
     }
   }
 
-  private async refreshBatchJob(includeTerminal: boolean = false): Promise<void> {
-    const jobId: string = includeTerminal ? this.batch.activeJobId : this.batch.pendingJobId()
+  private async refreshBatchJob(): Promise<void> {
+    const jobId: string = this.batch.pendingJobId()
     if (!this.auth.authenticated || jobId.length === 0 || this.batch.polling) {
       return
     }
@@ -675,7 +705,7 @@ struct Index {
       const state: BatchJob = await BatchApi.get(this.connection.apiBaseUrl, this.connection.apiKey, jobId)
       this.connection.markReachable()
       this.batch.apply(state)
-      await SettingsStore.saveActiveBatchJob(getContext(this), this.batch.activeJobId)
+      await SettingsStore.saveActiveBatchJob(getContext(this), this.batch.pendingJobId())
       if (this.batch.pendingJobId().length === 0) {
         this.stopBatchPolling()
       }
@@ -683,10 +713,7 @@ struct Index {
       if (isUnauthorizedError(error as Object)) {
         await this.expireSession()
       } else if (error instanceof ApiError && error.statusCode === 404) {
-        this.batch.activeJobId = ''
-        this.batch.errorMessage = '批量任务不存在或已被电脑端清理。'
-        await SettingsStore.saveActiveBatchJob(getContext(this), '')
-        this.stopBatchPolling()
+        await this.invalidateMissingBatchTask()
       } else {
         this.batch.errorMessage = userFacingError(error as Object, '暂时无法刷新批量进度，将自动重试。')
         if (isTransportError(error as Object)) this.connection.markTransportFailure()
@@ -694,6 +721,12 @@ struct Index {
     } finally {
       this.batch.polling = false
     }
+  }
+
+  private async invalidateMissingBatchTask(): Promise<void> {
+    this.stopBatchPolling()
+    this.batch.invalidateMissing('该批量任务已被电脑端清理，缓存结果也已从当前页面移除。')
+    await SettingsStore.saveActiveBatchJob(getContext(this), '')
   }
 
   private async controlBatch(action: string): Promise<void> {
@@ -713,11 +746,15 @@ struct Index {
         state = await BatchApi.cancel(this.connection.apiBaseUrl, this.connection.apiKey, jobId)
       }
       this.batch.apply(state)
-      await SettingsStore.saveActiveBatchJob(getContext(this), this.batch.activeJobId)
+      await SettingsStore.saveActiveBatchJob(getContext(this), this.batch.pendingJobId())
       if (this.batch.pendingJobId().length > 0) this.startBatchPolling()
     } catch (error) {
-      this.batch.errorMessage = userFacingError(error as Object, '批量任务控制失败，请重试。')
-      await this.showError(error as Object)
+      if (error instanceof ApiError && error.statusCode === 404) {
+        await this.invalidateMissingBatchTask()
+      } else {
+        this.batch.errorMessage = userFacingError(error as Object, '批量任务控制失败，请重试。')
+        await this.showError(error as Object)
+      }
     } finally {
       this.batch.controlBusy = false
     }
@@ -743,11 +780,15 @@ struct Index {
         this.batch.job.jobId
       )
       this.batch.activate(retry)
-      await SettingsStore.saveActiveBatchJob(getContext(this), retry.jobId)
+      await SettingsStore.saveActiveBatchJob(getContext(this), this.batch.pendingJobId())
       this.startBatchPolling()
     } catch (error) {
-      this.batch.errorMessage = userFacingError(error as Object, '失败项重试未能启动。')
-      await this.showError(error as Object)
+      if (error instanceof ApiError && error.statusCode === 404) {
+        await this.invalidateMissingBatchTask()
+      } else {
+        this.batch.errorMessage = userFacingError(error as Object, '失败项重试未能启动。')
+        await this.showError(error as Object)
+      }
     } finally {
       this.batch.controlBusy = false
     }
@@ -1112,8 +1153,8 @@ struct Index {
     if (this.batch.pendingJobId().length > 0) {
       this.startBatchPolling()
     }
-    if (index === 1 && this.batch.activeJobId.length > 0) {
-      this.refreshBatchJob(true)
+    if (index === 1 && this.batch.pendingJobId().length > 0) {
+      this.refreshBatchJob()
     }
     if (index === 3) {
       this.loadHistory(true, this.history.items.length > 0)
@@ -1132,12 +1173,15 @@ struct Index {
       serviceSummary: this.isDeveloperAccount() ? this.connection.serviceSummary :
         (this.connection.serviceSummary.startsWith('已连接') ? '服务正常' : '服务暂不可用'),
       submitting: this.job.submitting,
+      imageEditing: this.imageEditing,
       imageUri: this.job.imageUri,
       builtInImages: this.builtInImages,
       onOpenSettings: (): void => { this.currentTab = 4 },
       onOpenGuide: (): void => { this.openKnowledgeGuide() },
       onOpenDocuments: (): void => { this.openDocumentWorkspace() },
       onChooseImage: (): void => { this.chooseImage() },
+      onTakePhoto: (): void => { this.chooseImage() },
+      onApplyImageEdits: (spec: ImageEditSpec): void => { this.applyImageEdits(spec) },
       onSelectBuiltInImage: (uri: string): void => { this.selectBuiltInImage(uri) },
       onSubmitImage: (): void => { this.submitImage() },
       onOpenResult: (analysisId: string): void => { this.openResult(analysisId) },
@@ -1163,6 +1207,7 @@ struct Index {
       onUseBuiltInImages: (): void => { this.useBuiltInBatch() },
       onToggleBuiltInImage: (uri: string): void => { this.toggleBuiltInBatch(uri) },
       onRemoveSelected: (index: number): void => { this.batch.removeSelected(index) },
+      onRemoveSelectedUris: (uris: string[]): void => { this.batch.removeSelectedUris(uris) },
       onClearSelection: (): void => { this.batch.clearSelection() },
       onSubmit: (): void => { this.submitBatch() },
       onPause: (): void => { this.controlBatch('pause') },

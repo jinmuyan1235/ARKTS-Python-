@@ -1,3 +1,5 @@
+import { bottomNavigationPercent } from '../services/MobileLayout'
+
 @Component
 export struct AppShell {
   @Link currentTab: number
@@ -35,7 +37,8 @@ export struct AppShell {
     }
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
-    .width(72)
+    .width(`${bottomNavigationPercent(5)}%`)
+    .constraintSize({ minWidth: 52, maxWidth: 96 })
     .height(50)
     .backgroundColor(this.currentTab === index ? $r('app.color.primary_soft') : Color.Transparent)
     .borderRadius(17)

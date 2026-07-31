@@ -4,7 +4,7 @@ import router from '@ohos.router'
 import { common } from '@kit.AbilityKit'
 import { DocumentJob, DocumentResult } from '../model/DocumentResult'
 import { DocumentView } from '../components/DocumentView'
-import { ApiClient } from '../services/ApiClient'
+import { ApiClient, ApiError, isTransportError, isUnauthorizedError } from '../services/ApiClient'
 import { DocumentApi } from '../services/DocumentApi'
 import { SettingsStore, StoredSettings } from '../services/SettingsStore'
 import { userFacingError } from '../services/AppUtils'
@@ -59,16 +59,29 @@ struct DocumentWorkspace {
         this.jobMessage = '正在恢复上次未完成的文档任务…'
         this.startPolling()
       }
-    } catch (_) {
+    } catch (error) {
       this.document = undefined
-      this.activeJobId = ''
-      await SettingsStore.saveActiveDocumentTask(getContext(this), '', '')
+      this.activeJobId = settings.activeDocumentJobId
+      if (error instanceof ApiError && error.statusCode === 404) {
+        this.activeJobId = ''
+        await SettingsStore.saveActiveDocumentTask(getContext(this), '', '')
+        await SettingsStore.saveActiveRegionTask(getContext(this), '', '', '')
+        this.jobStatus = 'missing'
+        this.jobMessage = '上次文档已被电脑端清理。'
+      } else if (isUnauthorizedError(error as Object)) {
+        this.jobStatus = 'auth_required'
+        this.jobMessage = '登录已失效，任务记录仍保留；重新登录后可继续恢复。'
+      } else {
+        this.jobStatus = isTransportError(error as Object) ? 'offline' : 'restore_wait'
+        this.jobMessage = '暂时无法连接电脑端，任务记录已保留。'
+      }
     }
   }
 
   private async clearRestoredDocument(): Promise<void> {
     this.activeJobId = ''
     await SettingsStore.saveActiveDocumentTask(getContext(this), '', '')
+    await SettingsStore.saveActiveRegionTask(getContext(this), '', '', '')
   }
 
   private async chooseDocument(): Promise<void> {
@@ -143,17 +156,31 @@ struct DocumentWorkspace {
       if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
         this.stopPolling()
         this.busy = false
+        this.activeJobId = ''
         if (this.document !== undefined) {
-          this.document = await DocumentApi.document(this.apiBaseUrl, this.apiKey, this.document.documentId)
-          this.activeJobId = ''
           await SettingsStore.saveActiveDocumentTask(getContext(this), this.document.documentId, '')
+          this.document = await DocumentApi.document(this.apiBaseUrl, this.apiKey, this.document.documentId)
         }
       }
     } catch (error) {
       this.stopPolling()
-      this.busy = false
-      this.jobStatus = 'failed'
-      this.jobMessage = userFacingError(error as Object, '查询区域检测任务失败。')
+      if (error instanceof ApiError && error.statusCode === 404) {
+        this.busy = false
+        this.activeJobId = ''
+        this.jobStatus = 'missing'
+        this.jobMessage = '检测任务已被电脑端清理，可刷新文档查看已有区域。'
+        if (this.document !== undefined) {
+          await SettingsStore.saveActiveDocumentTask(getContext(this), this.document.documentId, '')
+        }
+      } else if (isUnauthorizedError(error as Object)) {
+        this.busy = false
+        this.jobStatus = 'auth_required'
+        this.jobMessage = '登录已失效，任务记录仍保留；重新登录后可继续恢复。'
+      } else {
+        this.busy = false
+        this.jobStatus = isTransportError(error as Object) ? 'offline' : 'restore_wait'
+        this.jobMessage = '连接暂时中断，任务记录已保留。点击刷新或重新进入页面后继续。'
+      }
     }
   }
 
@@ -194,6 +221,13 @@ struct DocumentWorkspace {
   }
 
   private async refreshDocument(): Promise<void> {
+    if (this.activeJobId.length > 0) {
+      this.busy = true
+      this.jobStatus = 'restoring'
+      this.jobMessage = '正在重新连接未完成的文档任务…'
+      this.startPolling()
+      return
+    }
     if (this.document === undefined) {
       return
     }

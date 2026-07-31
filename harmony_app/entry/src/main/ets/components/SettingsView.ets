@@ -25,6 +25,7 @@ export struct SettingsView {
   @Prop checking: boolean = false
   @Prop serviceSummary: string = ''
   @Prop serviceHealth: HealthResult | undefined = undefined
+  @State activeSection: string = ''
   onChooseAvatar: () => void = () => {}
   onSaveProfile: () => void = () => {}
   onChangePassword: () => void = () => {}
@@ -46,62 +47,110 @@ export struct SettingsView {
     SectionHeader({ symbol: symbol, title: title, caption: caption })
   }
 
+  private sectionTitle(): string {
+    if (this.activeSection === 'account') return '账号'
+    if (this.activeSection === 'security') return '安全'
+    if (this.activeSection === 'service') return '服务连接'
+    if (this.activeSection === 'developer') return '开发工具'
+    return '设置'
+  }
+
+  @Builder
+  private settingsMenuItem(symbol: string, title: string, caption: string, section: string) {
+    Row({ space: 12 }) {
+      Text(symbol).fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('app.color.primary'))
+        .textAlign(TextAlign.Center).width(44).height(44)
+        .backgroundColor($r('app.color.primary_soft')).borderRadius(14)
+      Column({ space: 3 }) {
+        Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+        Text(caption).fontSize(11).fontColor($r('app.color.text_secondary')).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Text('›').fontSize(22).fontColor($r('app.color.text_tertiary'))
+        .textAlign(TextAlign.Center).width(32).height(44)
+    }
+    .alignItems(VerticalAlign.Center).width('100%').height(78).padding({ left: 16, right: 12 })
+    .backgroundColor($r('app.color.surface')).border({ width: 1, color: $r('app.color.border') })
+    .borderRadius($r('app.float.card_radius')).onClick(() => this.activeSection = section)
+    .accessibilityText(`打开${title}设置`)
+  }
+
   build() {
     Stack() {
       MoleculeBackdrop()
       Scroll() {
         Column({ space: 16 }) {
           PageHeader({
-            title: '设置',
+            title: this.sectionTitle(),
             subtitle: '',
             currentUser: this.currentUser,
             onOpenGuide: this.onOpenGuide
           })
 
-          Row({ space: 12 }) {
-            Text('?')
-              .fontSize(21)
-              .fontWeight(FontWeight.Bold)
-              .fontColor($r('app.color.primary'))
-              .textAlign(TextAlign.Center)
-              .width(44)
-              .height(44)
-              .backgroundColor($r('app.color.primary_soft'))
-              .borderRadius(14)
-            Column({ space: 3 }) {
-              Text('术语与项目指南')
-                .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+          if (this.activeSection !== '') {
+            Row() {
+              Text('‹  返回设置')
+                .fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.primary'))
+                .height(44).lineHeight(44).width(120)
             }
-            .alignItems(HorizontalAlign.Start)
-            .layoutWeight(1)
-            Text('查看 ›').fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.primary'))
+            .alignItems(VerticalAlign.Center).width('100%').height(44)
+            .onClick(() => this.activeSection = '')
+            .accessibilityText('返回设置主页')
           }
-          .alignItems(VerticalAlign.Center)
-          .width('100%')
-          .padding(16)
-          .backgroundColor($r('app.color.surface'))
-          .border({ width: 1, color: $r('app.color.border') })
-          .borderRadius($r('app.float.card_radius'))
-          .onClick(this.onOpenGuide)
-          .accessibilityText('打开化学信息学术语与项目指南')
 
-          if (this.isDeveloper) {
+          if (this.activeSection === '') {
+            this.settingsMenuItem('◉', '账号', '头像、显示名称与团队信息', 'account')
+            this.settingsMenuItem('◇', '安全', '密码、会话与退出登录', 'security')
+            this.settingsMenuItem('⌁', '服务连接', '服务地址、API Key 与连接检测', 'service')
+            if (this.isDeveloper) {
+              this.settingsMenuItem('◫', '开发工具', '模型状态、反馈审核与诊断', 'developer')
+            }
+          }
+
+          if (this.activeSection === '') {
+            Row({ space: 12 }) {
+              Text('?').fontSize(20).fontWeight(FontWeight.Bold).fontColor($r('app.color.primary'))
+                .textAlign(TextAlign.Center).width(44).height(44)
+                .backgroundColor($r('app.color.primary_soft')).borderRadius(14)
+              Column({ space: 3 }) {
+                Text('术语与项目指南')
+                  .fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+                Text('术语说明与使用帮助').fontSize(11).fontColor($r('app.color.text_secondary'))
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              Text('›').fontSize(22).fontColor($r('app.color.text_tertiary'))
+                .textAlign(TextAlign.Center).width(32).height(44)
+            }
+            .alignItems(VerticalAlign.Center).width('100%').height(78)
+            .padding({ left: 16, right: 12 })
+            .backgroundColor($r('app.color.surface'))
+            .border({ width: 1, color: $r('app.color.border') })
+            .borderRadius($r('app.float.card_radius'))
+            .onClick(this.onOpenGuide)
+            .accessibilityText('打开化学信息学术语与项目指南')
+          }
+
+          if (this.activeSection === 'developer' && this.isDeveloper) {
             Row({ space: 12 }) {
               Text('◎').fontSize(21).fontWeight(FontWeight.Bold).fontColor($r('app.color.accent'))
                 .textAlign(TextAlign.Center).width(44).height(44)
                 .backgroundColor($r('app.color.primary_soft')).borderRadius(14)
               Column({ space: 3 }) {
                 Text('反馈数据审核').fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.text_primary'))
+                Text('反馈样本审核与清单导出').fontSize(11).fontColor($r('app.color.text_secondary'))
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-              Text('进入 ›').fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.primary'))
+              Text('›').fontSize(22).fontColor($r('app.color.text_tertiary'))
+                .textAlign(TextAlign.Center).width(32).height(44)
             }
-            .alignItems(VerticalAlign.Center).width('100%').padding(16)
+            .alignItems(VerticalAlign.Center).width('100%').height(78)
+            .padding({ left: 16, right: 12 })
             .backgroundColor($r('app.color.surface')).border({ width: 1, color: $r('app.color.border') })
             .borderRadius($r('app.float.card_radius')).onClick(this.onOpenDatasetReview)
             .accessibilityText('打开反馈数据审核模块')
           }
 
-          if (this.currentUser !== undefined) {
+          if (this.activeSection === 'account' && this.currentUser !== undefined) {
             Column({ space: 14 }) {
               this.cardTitle('◉', '账号资料', `用户名 @${this.currentUser.username} 不可修改`)
               Row({ space: 13 }) {
@@ -158,7 +207,7 @@ export struct SettingsView {
             .borderRadius($r('app.float.card_radius'))
           }
 
-          if (this.isDeveloper) {
+          if (this.activeSection === 'account' && this.isDeveloper) {
             Column({ space: 14 }) {
             this.cardTitle('⌬', '项目组成员', `${this.members.length} 名成员共享分析历史`)
             if (this.membersLoading && this.members.length === 0) {
@@ -198,7 +247,8 @@ export struct SettingsView {
             .borderRadius($r('app.float.card_radius'))
           }
 
-          Column({ space: 12 }) {
+          if (this.activeSection === 'security') {
+            Column({ space: 12 }) {
             this.cardTitle('◇', '密码与会话安全', '修改密码后其他旧会话会立即失效')
             if (this.isDeveloper) {
               Row({ space: 8 }) {
@@ -226,8 +276,10 @@ export struct SettingsView {
           .backgroundColor($r('app.color.surface'))
           .border({ width: 1, color: $r('app.color.border') })
           .borderRadius($r('app.float.card_radius'))
+          }
 
-          ConnectionSetupCard({
+          if (this.activeSection === 'service') {
+            ConnectionSetupCard({
             apiBaseUrl: this.apiBaseUrl,
             apiKey: this.apiKey,
             serviceSummary: this.serviceSummary,
@@ -240,8 +292,9 @@ export struct SettingsView {
             onCheck: this.onCheckService,
             onSave: this.onSaveSettings
           })
+          }
 
-          if (this.isDeveloper) {
+          if (this.activeSection === 'developer' && this.isDeveloper) {
             Column({ space: 10 }) {
             this.cardTitle('◫', '模型运行状态', '')
             if (this.serviceHealth === undefined) {
@@ -309,11 +362,13 @@ export struct SettingsView {
             .borderRadius($r('app.float.card_radius'))
           }
 
-          Button('退出当前账号')
+          if (this.activeSection === 'security') {
+            Button('退出当前账号')
             .width('100%').height(48)
             .backgroundColor($r('app.color.danger_soft')).fontColor($r('app.color.danger'))
             .onClick(this.onLogout)
             .accessibilityText('退出当前账号')
+          }
         }
         .width('100%')
         .padding({ left: 16, right: 16, top: 18, bottom: 30 })

@@ -3,6 +3,8 @@ import { LocalTaskState } from '../controllers/JobController'
 import { formatElapsed, taskPresentation } from '../services/UiPresentation'
 import { MoleculeBackdrop, SectionHeader, StatusPill } from './CommonStates'
 import { PageHeader } from './PageChrome'
+import { ImageEditorView } from './ImageEditorView'
+import { ImageEditSpec } from '../services/ImageEditGeometry'
 
 @Component
 export struct RecognitionView {
@@ -11,14 +13,18 @@ export struct RecognitionView {
   @Prop tasks: LocalTaskState[] = []
   @Prop serviceSummary: string = ''
   @Prop submitting: boolean = false
+  @Prop imageEditing: boolean = false
   @Prop imageUri: string = ''
   @Prop builtInImages: string[] = []
   @State nowMs: number = Date.now()
+  @State imageEditorOpen: boolean = false
   private elapsedTimer: number = -1
   onOpenSettings: () => void = () => {}
   onOpenGuide: () => void = () => {}
   onOpenDocuments: () => void = () => {}
   onChooseImage: () => void = () => {}
+  onTakePhoto: () => void = () => {}
+  onApplyImageEdits: (spec: ImageEditSpec) => void = (_spec: ImageEditSpec) => {}
   onSelectBuiltInImage: (uri: string) => void = (_uri: string) => {}
   onSubmitImage: () => void = () => {}
   onOpenResult: (analysisId: string) => void = (_analysisId: string) => {}
@@ -185,7 +191,7 @@ export struct RecognitionView {
           }
 
           Column({ space: 12 }) {
-            SectionHeader({ symbol: '＋', title: '图片识别', caption: `${this.builtInImages.length} 张内置测试图` })
+            SectionHeader({ symbol: '＋', title: '图片识别', caption: '选择、拍照或编辑图片' })
             if (this.imageUri.length > 0) {
               Image(this.imageUri)
                 .width('100%').height(210)
@@ -212,7 +218,7 @@ export struct RecognitionView {
                 Row({ space: 8 }) {
                   ForEach(this.builtInImages, (uri: string, index: number) => {
                     Stack({ alignContent: Alignment.BottomEnd }) {
-                      Image(uri).width(66).height(58).objectFit(ImageFit.Cover)
+                      Image(uri).width(66).height(58).objectFit(ImageFit.Contain)
                         .backgroundColor($r('app.color.surface_structure')).borderRadius(9)
                         .border({ width: this.imageUri === uri ? 2 : 1,
                           color: this.imageUri === uri ? $r('app.color.primary') : $r('app.color.divider') })
@@ -226,9 +232,21 @@ export struct RecognitionView {
                 }
               }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
             }
-            Button('从相册选择').width('100%').height(44).enabled(!this.submitting)
-              .backgroundColor($r('app.color.primary_soft')).fontColor($r('app.color.primary'))
-              .onClick(this.onChooseImage)
+            Row({ space: 8 }) {
+              Button('拍照').layoutWeight(1).height(42).enabled(!this.submitting && !this.imageEditing)
+                .backgroundColor($r('app.color.primary_soft')).fontColor($r('app.color.primary'))
+                .onClick(this.onTakePhoto)
+              Button(this.imageUri.length > 0 ? '重新选择' : '相册')
+                .layoutWeight(1).height(42).enabled(!this.submitting && !this.imageEditing)
+                .backgroundColor($r('app.color.primary_soft')).fontColor($r('app.color.primary'))
+                .onClick(this.onChooseImage)
+            }.width('100%')
+            if (this.imageUri.length > 0) {
+              Button('裁剪、旋转与翻转')
+                .width('100%').height(42).enabled(!this.submitting && !this.imageEditing)
+                .backgroundColor($r('app.color.surface_soft')).fontColor($r('app.color.text_body'))
+                .onClick(() => this.imageEditorOpen = true)
+            }
             Button(this.submitting ? '提交中…' : '开始识别')
               .width('100%').height(50)
               .enabled(!this.submitting && this.imageUri.length > 0)
@@ -249,6 +267,24 @@ export struct RecognitionView {
       .width('100%').height('100%')
       .scrollBar(BarState.Off)
       .edgeEffect(EdgeEffect.Spring)
+      if (this.imageEditorOpen && this.imageUri.length > 0) {
+        Column() {
+          ImageEditorView({
+            imageUri: this.imageUri,
+            busy: this.imageEditing,
+            initialRotation: 0,
+            onCancel: (): void => { this.imageEditorOpen = false },
+            onApply: (spec: ImageEditSpec): void => {
+              this.onApplyImageEdits(spec)
+              this.imageEditorOpen = false
+            }
+          })
+        }
+        .justifyContent(FlexAlign.Center)
+        .width('100%').height('100%').padding(12)
+        .backgroundColor($r('app.color.page_background'))
+        .zIndex(20)
+      }
     }
     .width('100%').height('100%')
     .backgroundColor($r('app.color.page_background'))
