@@ -42,6 +42,9 @@ jobs:
       - self-hosted
       - ${{ inputs.gpu_runner_label }}
     timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: backend
     env:
       MPLBACKEND: Agg
       APP_MODE: production
@@ -57,6 +60,9 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
           cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-decimer.txt
 
       - name: Install base dependencies
         run: |
@@ -157,7 +163,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: manual-gpu-ocsr-${{ github.run_id }}
-          path: gpu-ci-artifacts/
+          path: backend/gpu-ci-artifacts/
 
       - name: Enforce manual GPU health result
         if: ${{ inputs.fail_on_health_failure == 'true' }}

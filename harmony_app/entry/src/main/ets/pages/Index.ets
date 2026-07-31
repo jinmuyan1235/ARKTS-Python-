@@ -41,6 +41,7 @@ import { BatchController, MAX_MOBILE_BATCH_IMAGES } from '../controllers/BatchCo
 import { HistoryController } from '../controllers/HistoryController'
 import { BuiltInTestFiles, BuiltInTestSet } from '../services/BuiltInTestSet'
 import { SecureStore } from '../services/SecureStore'
+import { showDangerConfirmation } from '../services/ConfirmAction'
 
 @Entry
 @Component
@@ -365,6 +366,14 @@ struct Index {
     this.currentTab = 0
   }
 
+  private confirmLogout(): void {
+    showDangerConfirmation({
+      title: '退出当前账号？',
+      message: '退出后需要重新登录。正在电脑端运行的任务不会被删除。',
+      confirmText: '确认退出'
+    }, () => this.logout())
+  }
+
   private async expireSession(): Promise<void> {
     const username: string = this.auth.currentUser === undefined ?
       this.auth.authUsername : this.auth.currentUser.username
@@ -566,13 +575,18 @@ struct Index {
 
   private async chooseBatchImages(): Promise<void> {
     try {
+      const remaining: number = this.batch.remainingCapacity()
+      if (remaining <= 0) {
+        await promptAction.openToast({ message: `每次最多选择 ${MAX_MOBILE_BATCH_IMAGES} 张图片。` })
+        return
+      }
       const options = new photoAccessHelper.PhotoSelectOptions()
       options.MIMEType = photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE
-      options.maxSelectNumber = MAX_MOBILE_BATCH_IMAGES
+      options.maxSelectNumber = remaining
       const picker = new photoAccessHelper.PhotoViewPicker()
       const selected = await picker.select(options)
       if (selected.photoUris.length > 0) {
-        this.batch.select(selected.photoUris)
+        this.batch.append(selected.photoUris)
       } else {
         await promptAction.openToast({ message: '请在图库中选择至少一张分子结构图片。' })
       }
@@ -586,8 +600,9 @@ struct Index {
       await promptAction.openToast({ message: '内置测试集加载失败，请重新打开应用。' })
       return
     }
-    this.batch.select(this.builtInImages)
-    await promptAction.openToast({ message: `已载入 ${this.builtInImages.length} 张测试图。` })
+    const before: number = this.batch.selectedUris.length
+    this.batch.append(this.builtInImages)
+    await promptAction.openToast({ message: `已添加 ${this.batch.selectedUris.length - before} 张测试图。` })
   }
 
   private toggleBuiltInBatch(uri: string): void {
@@ -706,6 +721,14 @@ struct Index {
     } finally {
       this.batch.controlBusy = false
     }
+  }
+
+  private confirmBatchCancel(): void {
+    showDangerConfirmation({
+      title: '取消批量任务？',
+      message: '未处理的图片将不再识别，已经完成的结果仍会保留。',
+      confirmText: '确认取消'
+    }, () => this.controlBatch('cancel'))
   }
 
   private async retryBatchFailed(): Promise<void> {
@@ -881,6 +904,14 @@ struct Index {
     }
   }
 
+  private confirmRecognitionCancel(jobId: string): void {
+    showDangerConfirmation({
+      title: '终止识别任务？',
+      message: '任务终止后不能继续，已经生成的结果不会被删除。',
+      confirmText: '确认终止'
+    }, () => this.controlRecognitionJob(jobId, 'cancel'))
+  }
+
   private async analyzeSmiles(): Promise<void> {
     if (this.job.smilesInput.trim().length === 0) {
       await promptAction.openToast({ message: '请输入一条 SMILES。' })
@@ -998,27 +1029,18 @@ struct Index {
   }
 
   private confirmDelete(item: HistoryItem): void {
-    AlertDialog.show({
-      title: '删除历史索引',
-      message: '仅从手机历史列表移除，电脑上的报告和图片文件会保留。',
-      primaryButton: {
-        value: '取消',
-        action: () => {
-        }
-      },
-      secondaryButton: {
-        value: '删除',
-        fontColor: $r('app.color.danger'),
-        action: () => this.deleteHistory(item)
-      }
-    })
+    showDangerConfirmation({
+      title: '从历史中删除？',
+      message: '只会从历史列表中移除，电脑上的报告和图片文件会保留。',
+      confirmText: '确认删除'
+    }, () => this.deleteHistory(item))
   }
 
   private async deleteHistory(item: HistoryItem): Promise<void> {
     try {
       await AnalysisApi.deleteAnalysis(this.connection.apiBaseUrl, this.connection.apiKey, item.analysisId)
       await this.loadHistory(true)
-      await promptAction.openToast({ message: '历史索引已删除，电脑端文件已保留。' })
+      await promptAction.openToast({ message: '历史记录已移除，电脑端文件仍然保留。' })
     } catch (error) {
       await this.showError(error)
     }
@@ -1121,7 +1143,7 @@ struct Index {
       onOpenResult: (analysisId: string): void => { this.openResult(analysisId) },
       onPauseTask: (jobId: string): void => { this.controlRecognitionJob(jobId, 'pause') },
       onResumeTask: (jobId: string): void => { this.controlRecognitionJob(jobId, 'resume') },
-      onCancelTask: (jobId: string): void => { this.controlRecognitionJob(jobId, 'cancel') }
+      onCancelTask: (jobId: string): void => { this.confirmRecognitionCancel(jobId) }
     })
   }
 
@@ -1140,11 +1162,12 @@ struct Index {
       onChooseImages: (): void => { this.chooseBatchImages() },
       onUseBuiltInImages: (): void => { this.useBuiltInBatch() },
       onToggleBuiltInImage: (uri: string): void => { this.toggleBuiltInBatch(uri) },
+      onRemoveSelected: (index: number): void => { this.batch.removeSelected(index) },
       onClearSelection: (): void => { this.batch.clearSelection() },
       onSubmit: (): void => { this.submitBatch() },
       onPause: (): void => { this.controlBatch('pause') },
       onResume: (): void => { this.controlBatch('resume') },
-      onCancel: (): void => { this.controlBatch('cancel') },
+      onCancel: (): void => { this.confirmBatchCancel() },
       onRetryFailed: (): void => { this.retryBatchFailed() },
       onOpenExports: (jobId: string): void => { this.openExportCenter('batch', jobId) },
       onOpenResult: (analysisId: string): void => { this.openResult(analysisId) }
@@ -1232,7 +1255,7 @@ struct Index {
       onChangePassword: (): void => { this.changePassword() },
       onSaveSettings: (): void => { this.saveSettings() },
       onCheckService: (): void => { this.checkService() },
-      onLogout: (): void => { this.logout() }
+      onLogout: (): void => { this.confirmLogout() }
     })
   }
   build() {

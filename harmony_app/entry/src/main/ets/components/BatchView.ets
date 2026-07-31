@@ -1,5 +1,6 @@
 import { BatchItemResult, BatchJob } from '../model/BatchResult'
 import { UserProfile } from '../model/VisionResult'
+import { MAX_MOBILE_BATCH_IMAGES } from '../controllers/BatchController'
 import { MoleculeBackdrop, SectionHeader, StatusPill } from './CommonStates'
 import { PageHeader } from './PageChrome'
 
@@ -60,6 +61,7 @@ export struct BatchView {
   onChooseImages: () => void = () => {}
   onUseBuiltInImages: () => void = () => {}
   onToggleBuiltInImage: (uri: string) => void = (_uri: string) => {}
+  onRemoveSelected: (index: number) => void = (_index: number) => {}
   onClearSelection: () => void = () => {}
   onSubmit: () => void = () => {}
   onPause: () => void = () => {}
@@ -170,17 +172,25 @@ export struct BatchView {
             if (this.selectedUris.length > 0) {
               Scroll() {
                 Row({ space: 8 }) {
-                  ForEach(this.selectedUris.slice(0, 8), (uri: string, index: number) => {
-                    Stack({ alignContent: Alignment.BottomEnd }) {
-                      Image(uri).width(76).height(76).objectFit(ImageFit.Cover)
+                  ForEach(this.selectedUris, (uri: string, index: number) => {
+                    Column({ space: 4 }) {
+                      Image(uri).width(72).height(72).objectFit(ImageFit.Cover)
                         .backgroundColor($r('app.color.surface_structure')).borderRadius(10)
-                      Text(`${index + 1}`).fontSize(9).fontColor($r('app.color.text_on_primary'))
-                        .padding(4).backgroundColor($r('app.color.primary')).borderRadius(8)
+                      Row() {
+                        Text(`第 ${index + 1} 张`).fontSize(9).fontColor($r('app.color.text_secondary'))
+                        Blank()
+                        Text('移除').fontSize(9).fontWeight(FontWeight.Medium)
+                          .fontColor($r('app.color.danger'))
+                          .onClick(() => this.onRemoveSelected(index))
+                          .accessibilityText(`移除第${index + 1}张已选图片`)
+                      }.width(72).height(20)
                     }
+                    .width(76).height(98)
                   })
                 }
               }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
-              Text(`已选择 ${this.selectedUris.length} 张图片`)
+              Text(`已选 ${this.selectedUris.length} 张 · 还可添加 ` +
+                `${Math.max(0, MAX_MOBILE_BATCH_IMAGES - this.selectedUris.length)} 张`)
                 .fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
             } else {
               Text('尚未选择图片').fontSize(12).fontColor($r('app.color.text_secondary')).width('100%')
@@ -207,7 +217,8 @@ export struct BatchView {
               }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
             }
             Row({ space: 10 }) {
-              Button('相册').layoutWeight(1).height(44).enabled(!this.uploading)
+              Button('相册').layoutWeight(1).height(44)
+                .enabled(!this.uploading && this.selectedUris.length < MAX_MOBILE_BATCH_IMAGES)
                 .backgroundColor($r('app.color.primary_soft')).fontColor($r('app.color.primary'))
                 .onClick(this.onChooseImages)
               Button('全选内置').layoutWeight(1).height(44)

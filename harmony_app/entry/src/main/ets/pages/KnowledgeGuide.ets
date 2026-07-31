@@ -116,6 +116,7 @@ const GLOSSARY_TERMS: GlossaryTerm[] = [
 struct KnowledgeGuide {
   @State query: string = ''
   @State category: string = '全部'
+  @State expandedTerm: string = ''
 
   private leave(): void {
     router.back()
@@ -131,6 +132,10 @@ struct KnowledgeGuide {
         item.summary.toLowerCase().includes(keyword)
       return categoryMatches && keywordMatches
     })
+  }
+
+  private toggleTerm(term: string): void {
+    this.expandedTerm = this.expandedTerm === term ? '' : term
   }
 
   @Builder
@@ -159,25 +164,34 @@ struct KnowledgeGuide {
         }
         .alignItems(HorizontalAlign.Start).layoutWeight(1)
         StatusPill({ symbol: '⌬', label: item.category, tone: 'primary' })
+        Text(this.expandedTerm === item.term ? '⌃' : '⌄')
+          .fontSize(16).fontWeight(FontWeight.Bold).fontColor($r('app.color.primary'))
+          .width(24).height(28).textAlign(TextAlign.Center)
       }
-      Text(item.summary).fontSize(13).lineHeight(20).fontColor($r('app.color.text_body')).width('100%')
-      Column({ space: 4 }) {
-        Text('在本项目中').fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.primary'))
-        Text(item.projectUse).fontSize(12).lineHeight(18).fontColor($r('app.color.text_secondary'))
+      Text(item.summary)
+        .fontSize(13).lineHeight(20).fontColor($r('app.color.text_body')).width('100%')
+        .maxLines(this.expandedTerm === item.term ? 8 : 2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+      if (this.expandedTerm === item.term) {
+        Column({ space: 4 }) {
+          Text('在本项目中').fontSize(12).fontWeight(FontWeight.Medium).fontColor($r('app.color.primary'))
+          Text(item.projectUse).fontSize(12).lineHeight(18).fontColor($r('app.color.text_secondary'))
+        }
+        .alignItems(HorizontalAlign.Start).width('100%').padding(11)
+        .backgroundColor($r('app.color.primary_faint')).borderRadius(12)
+        Row({ space: 7 }) {
+          Text('!').fontSize(12).fontWeight(FontWeight.Bold).fontColor($r('app.color.warning'))
+          Text(item.caution).fontSize(11).lineHeight(17).fontColor($r('app.color.text_secondary')).layoutWeight(1)
+        }
+        .alignItems(VerticalAlign.Top).width('100%')
       }
-      .alignItems(HorizontalAlign.Start).width('100%').padding(11)
-      .backgroundColor($r('app.color.primary_faint')).borderRadius(12)
-      Row({ space: 7 }) {
-        Text('!').fontSize(12).fontWeight(FontWeight.Bold).fontColor($r('app.color.warning'))
-        Text(item.caution).fontSize(11).lineHeight(17).fontColor($r('app.color.text_secondary')).layoutWeight(1)
-      }
-      .alignItems(VerticalAlign.Top).width('100%')
     }
     .alignItems(HorizontalAlign.Start).width('100%').padding(16)
     .backgroundColor($r('app.color.surface'))
     .border({ width: 1, color: $r('app.color.border') })
     .borderRadius($r('app.float.card_radius'))
-    .accessibilityText(`${item.term}，${item.summary}。在本项目中，${item.projectUse}。注意，${item.caution}`)
+    .onClick(() => this.toggleTerm(item.term))
+    .accessibilityText(`${item.term}，${this.expandedTerm === item.term ? '已展开' : '已折叠'}。${item.summary}`)
   }
 
   build() {

@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _workflow(name: str) -> str:
-    return (PROJECT_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+    return (REPOSITORY_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
 
 
 def test_regular_ci_matrix_compiles_and_runs_pytest_without_real_model_installers() -> None:

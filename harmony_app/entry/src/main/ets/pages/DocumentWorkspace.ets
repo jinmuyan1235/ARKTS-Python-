@@ -9,6 +9,7 @@ import { DocumentApi } from '../services/DocumentApi'
 import { SettingsStore, StoredSettings } from '../services/SettingsStore'
 import { userFacingError } from '../services/AppUtils'
 import { BuiltInTestFiles, BuiltInTestSet } from '../services/BuiltInTestSet'
+import { showDangerConfirmation } from '../services/ConfirmAction'
 
 @Entry
 @Component
@@ -22,7 +23,7 @@ struct DocumentWorkspace {
   @State jobMessage: string = ''
   @State busy: boolean = false
   private pollTimer: number = -1
-  private activeJobId: string = ''
+  @State activeJobId: string = ''
 
   aboutToAppear(): void {
     this.initialize()
@@ -44,6 +45,30 @@ struct DocumentWorkspace {
     this.apiBaseUrl = settings.apiBaseUrl
     this.apiKey = settings.apiKey
     ApiClient.setSessionToken(settings.authToken)
+    await this.restoreDocumentTask(settings)
+  }
+
+  private async restoreDocumentTask(settings: StoredSettings): Promise<void> {
+    if (settings.activeDocumentId.length === 0) return
+    try {
+      this.document = await DocumentApi.document(this.apiBaseUrl, this.apiKey, settings.activeDocumentId)
+      this.activeJobId = settings.activeDocumentJobId
+      if (this.activeJobId.length > 0) {
+        this.busy = true
+        this.jobStatus = 'queued'
+        this.jobMessage = '正在恢复上次未完成的文档任务…'
+        this.startPolling()
+      }
+    } catch (_) {
+      this.document = undefined
+      this.activeJobId = ''
+      await SettingsStore.saveActiveDocumentTask(getContext(this), '', '')
+    }
+  }
+
+  private async clearRestoredDocument(): Promise<void> {
+    this.activeJobId = ''
+    await SettingsStore.saveActiveDocumentTask(getContext(this), '', '')
   }
 
   private async chooseDocument(): Promise<void> {
@@ -58,18 +83,20 @@ struct DocumentWorkspace {
         this.document = undefined
         this.jobStatus = ''
         this.jobMessage = ''
+        await this.clearRestoredDocument()
       }
     } catch (error) {
       await promptAction.openToast({ message: userFacingError(error as Object, '选择文档失败，请重试。') })
     }
   }
 
-  private useBuiltInDocument(): void {
+  private async useBuiltInDocument(): Promise<void> {
     if (this.builtInDocument.length === 0) return
     this.selectedUri = this.builtInDocument
     this.document = undefined
     this.jobStatus = ''
     this.jobMessage = ''
+    await this.clearRestoredDocument()
   }
 
   private async uploadAndDetect(): Promise<void> {
@@ -79,8 +106,10 @@ struct DocumentWorkspace {
     this.busy = true
     try {
       this.document = await DocumentApi.upload(this.apiBaseUrl, this.apiKey, this.selectedUri)
+      await SettingsStore.saveActiveDocumentTask(getContext(this), this.document.documentId, '')
       const job: DocumentJob = await DocumentApi.detect(this.apiBaseUrl, this.apiKey, this.document.documentId)
       this.activeJobId = job.jobId
+      await SettingsStore.saveActiveDocumentTask(getContext(this), this.document.documentId, this.activeJobId)
       this.jobStatus = job.status
       this.jobMessage = job.message
       this.startPolling()
@@ -116,6 +145,8 @@ struct DocumentWorkspace {
         this.busy = false
         if (this.document !== undefined) {
           this.document = await DocumentApi.document(this.apiBaseUrl, this.apiKey, this.document.documentId)
+          this.activeJobId = ''
+          await SettingsStore.saveActiveDocumentTask(getContext(this), this.document.documentId, '')
         }
       }
     } catch (error) {
@@ -142,12 +173,24 @@ struct DocumentWorkspace {
       if (job.status === 'cancelled') {
         this.stopPolling()
         this.busy = false
+        this.activeJobId = ''
+        if (this.document !== undefined) {
+          await SettingsStore.saveActiveDocumentTask(getContext(this), this.document.documentId, '')
+        }
       } else {
         this.startPolling()
       }
     } catch (error) {
       await promptAction.openToast({ message: userFacingError(error as Object, '控制区域检测任务失败。') })
     }
+  }
+
+  private confirmCancelJob(): void {
+    showDangerConfirmation({
+      title: '终止文档检测？',
+      message: '终止后尚未检测的页面不会继续处理，已生成的区域会保留。',
+      confirmText: '确认终止'
+    }, () => this.controlJob('cancel'))
   }
 
   private async refreshDocument(): Promise<void> {
@@ -193,7 +236,7 @@ struct DocumentWorkspace {
         onRefresh: (): void => { this.refreshDocument() },
         onPauseJob: (): void => { this.controlJob('pause') },
         onResumeJob: (): void => { this.controlJob('resume') },
-        onCancelJob: (): void => { this.controlJob('cancel') }
+        onCancelJob: (): void => { this.confirmCancelJob() }
       })
       .layoutWeight(1)
     }
